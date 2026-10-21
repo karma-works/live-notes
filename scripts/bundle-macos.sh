@@ -18,9 +18,9 @@ PROFILE="${LN_PROFILE:-release}"
 FEATURES=()
 if [[ -n "${LN_FEATURES:-}" ]]; then FEATURES=(--features "$LN_FEATURES"); fi
 if [[ "$PROFILE" == "dev" ]]; then
-  cargo build -p ln-app "${FEATURES[@]}"; BIN=target/debug/live-notes
+  cargo build -p ln-app ${FEATURES[@]+"${FEATURES[@]}"}; BIN=target/debug/live-notes
 else
-  cargo build --release -p ln-app "${FEATURES[@]}"; BIN=target/release/live-notes
+  cargo build --release -p ln-app ${FEATURES[@]+"${FEATURES[@]}"}; BIN=target/release/live-notes
 fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin"
