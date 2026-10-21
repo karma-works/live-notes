@@ -91,11 +91,7 @@ mod whisper {
             };
             state.pcm_to_mel(&pcm, threads).map_err(|e| Error::Transcribe(e.to_string()))?;
             let (_, probs) = state.lang_detect(0, threads).map_err(|e| Error::Transcribe(e.to_string()))?;
-            Ok(probs
-                .iter()
-                .enumerate()
-                .filter_map(|(i, p)| whisper_rs::get_lang_str(i as i32).map(|s| (Lang::new(s), *p)))
-                .collect())
+            Ok(probs.iter().enumerate().filter_map(|(i, p)| whisper_rs::get_lang_str(i as i32).map(|s| (Lang::new(s), *p))).collect())
         }
 
         fn transcribe(&mut self, pcm: &[f32], lang: Option<&Lang>, _hints: &[Lang], prompt: &str) -> Result<(String, Option<Lang>)> {

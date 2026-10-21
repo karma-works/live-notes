@@ -15,12 +15,12 @@ pub use langid::{LANG_CONFIDENCE_MIN, choose_language};
 pub use pipeline::{AsrEngine, AudioRing, ChannelSegmenter, PendingSegment};
 pub use post::{PostProcessor, is_hallucination};
 pub use resample::StreamResampler;
-pub use transcriber::{CloudTranscriber, Transcriber};
 #[cfg(feature = "whisper")]
 pub use transcriber::WhisperTranscriber;
-pub use vad::{EnergyVad, FRAME, Segmenter, SegmenterConfig, VoiceDetector};
+pub use transcriber::{CloudTranscriber, Transcriber};
 #[cfg(feature = "whisper")]
 pub use vad::SileroVad;
+pub use vad::{EnergyVad, FRAME, Segmenter, SegmenterConfig, VoiceDetector};
 
 /// Sample rate everything in this crate works with.
 pub const RATE: u32 = 16_000;

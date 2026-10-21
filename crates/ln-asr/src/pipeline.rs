@@ -148,13 +148,17 @@ mod tests {
         }
         fn detect(&mut self, pcm: &[f32]) -> Result<Vec<(Lang, f32)>> {
             let peak = pcm.iter().fold(0.0f32, |m, x| m.max(x.abs()));
-            Ok(if peak > 0.4 { vec![(Lang::new("zh"), 0.9), (Lang::new("ja"), 0.1)] } else { vec![(Lang::new("de"), 0.7), (Lang::new("nl"), 0.3)] })
+            Ok(if peak > 0.4 {
+                vec![(Lang::new("zh"), 0.9), (Lang::new("ja"), 0.1)]
+            } else {
+                vec![(Lang::new("de"), 0.7), (Lang::new("nl"), 0.3)]
+            })
         }
-        fn transcribe(&mut self, pcm: &[f32], lang: Option<&Lang>, _h: &[Lang], prompt: &str) -> Result<(String, Option<Lang>)> {
+        fn transcribe(&mut self, _pcm: &[f32], lang: Option<&Lang>, _h: &[Lang], prompt: &str) -> Result<(String, Option<Lang>)> {
             let l = lang.unwrap().clone();
             let t = if l.as_str() == "zh" { "我們開會." } else { "Hallo zusammen" };
             assert!(prompt.is_empty() || !prompt.contains(if l.as_str() == "zh" { "Hallo" } else { "开会" }), "prompt mixes languages");
-            Ok((format!("{t}{}", if pcm.is_empty() { "" } else { "" }), Some(l)))
+            Ok((t.to_string(), Some(l)))
         }
     }
 

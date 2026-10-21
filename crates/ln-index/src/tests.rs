@@ -51,6 +51,8 @@ fn fts_cjk_and_vector_search() {
     let milk_idx = todo.iter().position(|(_, t)| t.contains("Milch")).unwrap();
     let hits = ix.search("zzz", Some(&emb(milk_idx as f32)), &SearchFilter::default(), 2).unwrap();
     assert_eq!(hits[0].path, Path::new("/notes/c.md"));
+    assert!(hits[0].similarity.unwrap() > 0.99, "identical vector: {:?}", hits[0].similarity);
+    assert!(hits[1].similarity.unwrap() < hits[0].similarity.unwrap());
     assert!(ix.chunks_to_embed("m", 10).unwrap().is_empty());
     assert_eq!(ix.chunks_to_embed("other", 10).unwrap().len(), 4);
 }

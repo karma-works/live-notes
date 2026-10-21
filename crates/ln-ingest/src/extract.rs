@@ -51,8 +51,8 @@ pub fn kind_of(path: &Path) -> Option<FileKind> {
     Some(match ext.as_str() {
         "md" | "markdown" | "mdx" => FileKind::Markdown,
         "txt" | "text" | "csv" | "tsv" | "json" | "yaml" | "yml" | "toml" | "log" | "org" | "rst" | "tex" | "rs" | "py" | "js" | "ts"
-        | "tsx" | "jsx" | "go" | "java" | "kt" | "swift" | "c" | "h" | "cpp" | "hpp" | "cs" | "rb" | "php" | "sh" | "sql" | "css" | "scss"
-        | "xml" | "ini" | "cfg" => FileKind::Text,
+        | "tsx" | "jsx" | "go" | "java" | "kt" | "swift" | "c" | "h" | "cpp" | "hpp" | "cs" | "rb" | "php" | "sh" | "sql" | "css"
+        | "scss" | "xml" | "ini" | "cfg" => FileKind::Text,
         "html" | "htm" => FileKind::Html,
         "pdf" => FileKind::Pdf,
         "docx" => FileKind::Docx,
@@ -90,11 +90,14 @@ pub struct Extracted {
     pub blocks: Vec<Block>,
 }
 
+/// Describes an image (Gemma vision), used from v1.1 on (SPEC §16).
+pub type ImageDescriber<'a> = &'a (dyn Fn(&Path) -> Option<String> + Sync);
+
 /// Hooks that need other subsystems (OCR languages, image description by Gemma).
 #[derive(Default)]
 pub struct ExtractOptions<'a> {
     pub ocr_languages: Vec<&'static str>,
-    pub describe_image: Option<&'a (dyn Fn(&Path) -> Option<String> + Sync)>,
+    pub describe_image: Option<ImageDescriber<'a>>,
 }
 
 pub fn extract(path: &Path, opts: &ExtractOptions<'_>) -> Result<Extracted> {
@@ -124,7 +127,10 @@ pub fn extract(path: &Path, opts: &ExtractOptions<'_>) -> Result<Extracted> {
         }
         FileKind::Pdf => pdf_blocks(path)?,
         FileKind::Docx => zip_xml(path, &["word/document.xml"], &["w:p"], &["w:t"])?.into_iter().map(|(_, t)| Block::plain(t)).collect(),
-        FileKind::Odt => zip_xml(path, &["content.xml"], &["text:p", "text:h"], &["text:p", "text:h", "text:span"])?.into_iter().map(|(_, t)| Block::plain(t)).collect(),
+        FileKind::Odt => zip_xml(path, &["content.xml"], &["text:p", "text:h"], &["text:p", "text:h", "text:span"])?
+            .into_iter()
+            .map(|(_, t)| Block::plain(t))
+            .collect(),
         FileKind::Pptx => pptx_blocks(path)?,
         FileKind::Sheet => sheet_blocks(path)?,
         FileKind::Rtf => text_blocks(&strip_rtf(&read_text(path)?)),
@@ -134,11 +140,7 @@ pub fn extract(path: &Path, opts: &ExtractOptions<'_>) -> Result<Extracted> {
             if let Some(d) = opts.describe_image.and_then(|f| f(path)) {
                 text = format!("{d}\n\n{text}");
             }
-            if text.trim().is_empty() {
-                vec![]
-            } else {
-                vec![Block::plain(text)]
-            }
+            if text.trim().is_empty() { vec![] } else { vec![Block::plain(text)] }
         }
         FileKind::Email => {
             let (t, b) = email_blocks(&std::fs::read(path)?);
@@ -172,7 +174,11 @@ fn text_blocks(text: &str) -> Vec<Block> {
     for (i, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             if !cur.trim().is_empty() {
-                out.push(Block { text: std::mem::take(&mut cur), locator: Locator { line: Some(start_line), ..Default::default() }, lang: None });
+                out.push(Block {
+                    text: std::mem::take(&mut cur),
+                    locator: Locator { line: Some(start_line), ..Default::default() },
+                    lang: None,
+                });
             }
             cur.clear();
             start_line = i as u32 + 2;
@@ -237,7 +243,11 @@ fn markdown_blocks(text: &str) -> (Option<String>, Vec<Block>) {
     let mut in_code = false;
     let push = |cur: &mut String, heading: &Option<String>, blocks: &mut Vec<Block>| {
         if !cur.trim().is_empty() {
-            blocks.push(Block { text: std::mem::take(cur), locator: Locator { heading: heading.clone(), ..Default::default() }, lang: None });
+            blocks.push(Block {
+                text: std::mem::take(cur),
+                locator: Locator { heading: heading.clone(), ..Default::default() },
+                lang: None,
+            });
         }
         cur.clear();
     };
@@ -315,7 +325,7 @@ fn xml_paragraphs(xml: &str, para_tags: &[&str], text_tags: &[&str]) -> Vec<Stri
     loop {
         match r.read_event() {
             Ok(Event::Start(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+                let name = e.name().as_ref().to_string();
                 if text_tags.contains(&name.as_str()) {
                     depth_text += 1;
                 }
@@ -324,7 +334,7 @@ fn xml_paragraphs(xml: &str, para_tags: &[&str], text_tags: &[&str]) -> Vec<Stri
                 }
             }
             Ok(Event::Empty(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+                let name = e.name().as_ref().to_string();
                 if matches!(name.as_str(), "w:tab" | "text:tab" | "text:s") {
                     cur.push(' ');
                 } else if matches!(name.as_str(), "w:br" | "text:line-break" | "a:br") {
@@ -332,13 +342,13 @@ fn xml_paragraphs(xml: &str, para_tags: &[&str], text_tags: &[&str]) -> Vec<Stri
                 }
             }
             Ok(Event::Text(t)) if depth_text > 0 => {
-                cur.push_str(&unescape(&String::from_utf8_lossy(&t)));
+                cur.push_str(&unescape(&t));
             }
             Ok(Event::GeneralRef(r)) if depth_text > 0 => {
-                cur.push_str(&unescape(&format!("&{};", String::from_utf8_lossy(&r))));
+                cur.push_str(&unescape(&format!("&{};", &*r)));
             }
             Ok(Event::End(e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+                let name = e.name().as_ref().to_string();
                 if text_tags.contains(&name.as_str()) {
                     depth_text = depth_text.saturating_sub(1);
                 }
@@ -398,7 +408,7 @@ fn pptx_blocks(path: &Path) -> Result<Vec<Block>> {
     let mut z = zip::ZipArchive::new(f).map_err(|e| Error::Parse(e.to_string()))?;
     let mut slides: Vec<(u32, String)> = (0..z.len())
         .filter_map(|i| {
-            let name = z.by_index(i).ok()?.name().to_string();
+            let name = z.by_index(i).ok()?.name().ok()?.to_string();
             let n = name.strip_prefix("ppt/slides/slide")?.strip_suffix(".xml")?.parse().ok()?;
             Some((n, name))
         })
@@ -428,7 +438,11 @@ fn sheet_blocks(path: &Path) -> Result<Vec<Block>> {
                 text.push('\n');
             }
         }
-        out.push(Block { text, locator: Locator { page: Some(i as u32 + 1), heading: Some(name.clone()), ..Default::default() }, lang: None });
+        out.push(Block {
+            text,
+            locator: Locator { page: Some(i as u32 + 1), heading: Some(name.clone()), ..Default::default() },
+            lang: None,
+        });
     }
     Ok(out)
 }
@@ -466,7 +480,8 @@ fn iwork_blocks(path: &Path) -> Result<Vec<Block>> {
 fn email_blocks(bytes: &[u8]) -> (Option<String>, Vec<Block>) {
     let Some(m) = mail_parser::MessageParser::default().parse(bytes) else { return (None, vec![]) };
     let subject = m.subject().map(str::to_string);
-    let from = m.from().and_then(|a| a.first()).map(|a| format!("{} {}", a.name().unwrap_or(""), a.address().unwrap_or(""))).unwrap_or_default();
+    let from =
+        m.from().and_then(|a| a.first()).map(|a| format!("{} {}", a.name().unwrap_or(""), a.address().unwrap_or(""))).unwrap_or_default();
     let body = m.body_text(0).map(|b| b.into_owned()).unwrap_or_default();
     let mut blocks = vec![Block::plain(format!("{}\n{}", subject.clone().unwrap_or_default(), from.trim()))];
     blocks.extend(text_blocks(&body));

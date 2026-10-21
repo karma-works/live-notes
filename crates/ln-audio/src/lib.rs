@@ -27,7 +27,10 @@ pub enum Source {
     Microphone,
     SystemAudio,
     /// WAV file, played in real time (`realtime = true`) or as fast as possible.
-    File { path: PathBuf, realtime: bool },
+    File {
+        path: PathBuf,
+        realtime: bool,
+    },
     Off,
 }
 

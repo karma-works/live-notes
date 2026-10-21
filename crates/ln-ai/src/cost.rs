@@ -44,9 +44,7 @@ pub fn cost_of(model: &str, usage: &Usage) -> f64 {
     if let Some(c) = usage.cost {
         return c;
     }
-    token_prices(model)
-        .map(|(i, o)| (usage.prompt_tokens as f64 * i + usage.completion_tokens as f64 * o) / 1e6)
-        .unwrap_or(0.0)
+    token_prices(model).map(|(i, o)| (usage.prompt_tokens as f64 * i + usage.completion_tokens as f64 * o) / 1e6).unwrap_or(0.0)
 }
 
 /// Append-only cost log in JSON lines.
@@ -57,9 +55,8 @@ pub struct CostTracker {
 
 impl CostTracker {
     pub fn open(path: &Path) -> CostTracker {
-        let records = std::fs::read_to_string(path)
-            .map(|s| s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
-            .unwrap_or_default();
+        let records =
+            std::fs::read_to_string(path).map(|s| s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()).unwrap_or_default();
         CostTracker { path: path.to_path_buf(), records: Mutex::new(records) }
     }
 
@@ -121,7 +118,13 @@ mod tests {
         let p = dir.join("costs.jsonl");
         let _ = std::fs::remove_file(&p);
         let t = CostTracker::open(&p);
-        t.record_chat("openrouter", "google/gemma-4-26b-a4b-it", "summary", Some("n1"), &Usage { prompt_tokens: 16_000, completion_tokens: 1_500, cost: None });
+        t.record_chat(
+            "openrouter",
+            "google/gemma-4-26b-a4b-it",
+            "summary",
+            Some("n1"),
+            &Usage { prompt_tokens: 16_000, completion_tokens: 1_500, cost: None },
+        );
         t.record_audio("openai", "gpt-transcribe", Some("n1"), 50.0 * 60.0);
         let expected = 16_000.0 * 0.09 / 1e6 + 1_500.0 * 0.30 / 1e6 + 50.0 * 0.0045;
         assert!((t.note_total("n1") - expected).abs() < 1e-9);

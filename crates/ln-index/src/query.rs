@@ -28,11 +28,8 @@ pub fn cjk_runs(s: &str) -> Vec<String> {
 /// Builds a safe FTS5 query from free text: each word quoted, OR-combined, last word as prefix.
 /// Returns `None` when nothing searchable is left (e.g. only CJK or punctuation).
 pub fn fts_query(text: &str) -> Option<String> {
-    let words: Vec<String> = text
-        .split(|c: char| !(c.is_alphanumeric() || c == '_') || is_cjk(c))
-        .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
-        .collect();
+    let words: Vec<String> =
+        text.split(|c: char| !(c.is_alphanumeric() || c == '_') || is_cjk(c)).filter(|w| !w.is_empty()).map(|w| w.to_lowercase()).collect();
     if words.is_empty() {
         return None;
     }

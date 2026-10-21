@@ -24,11 +24,7 @@ pub enum UiLanguage {
 impl UiLanguage {
     /// Picks the UI language from a locale string such as `de_CH.UTF-8` or `en-US`.
     pub fn from_locale(locale: &str) -> Self {
-        if locale.to_ascii_lowercase().starts_with("de") {
-            UiLanguage::De
-        } else {
-            UiLanguage::En
-        }
+        if locale.to_ascii_lowercase().starts_with("de") { UiLanguage::De } else { UiLanguage::En }
     }
 
     /// Reads the system locale from the usual environment variables.

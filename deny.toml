@@ -1,0 +1,45 @@
+# cargo deny check — licences, bans and advisories (SPEC §14, §11).
+
+[graph]
+all-features = false
+
+[licenses]
+# Compatible with distributing an Apache-2.0 application.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "BSL-1.0",
+    "0BSD",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "bzip2-1.0.6",
+    "NCSA",
+    "Unlicense",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+# Only the model client and the model downloader may talk to the network (SPEC §11).
+deny = [{ name = "reqwest", wrappers = ["ln-ai", "ln-models"] }]
+
+[advisories]
+# Unmaintained crates deep in the GUI stack are reported, not fatal.
+unmaintained = "workspace"
+yanked = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

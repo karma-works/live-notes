@@ -38,17 +38,15 @@ pub fn recording_file_name(created: &DateTime<FixedOffset>, title: Option<&str>,
         UiLanguage::En => "Recording",
     };
     let t = title.map(sanitize_title).filter(|t| !t.is_empty()).unwrap_or_else(|| fallback.to_string());
-    PathBuf::from(format!("{:04}", created.year()))
-        .join(format!("{:02}", created.month()))
-        .join(format!(
-            "{:04}-{:02}-{:02} {:02}{:02} {}.md",
-            created.year(),
-            created.month(),
-            created.day(),
-            created.hour(),
-            created.minute(),
-            t
-        ))
+    PathBuf::from(format!("{:04}", created.year())).join(format!("{:02}", created.month())).join(format!(
+        "{:04}-{:02}-{:02} {:02}{:02} {}.md",
+        created.year(),
+        created.month(),
+        created.day(),
+        created.hour(),
+        created.minute(),
+        t
+    ))
 }
 
 /// Adds ` 2`, ` 3` … before the extension until the path is free (or equals `allow`).
@@ -142,10 +140,7 @@ mod tests {
     #[test]
     fn names_and_sanitising() {
         let c = DateTime::parse_from_rfc3339("2026-10-21T14:30:12+02:00").unwrap();
-        assert_eq!(
-            recording_file_name(&c, None, UiLanguage::De),
-            PathBuf::from("2026/10/2026-10-21 1430 Aufnahme.md")
-        );
+        assert_eq!(recording_file_name(&c, None, UiLanguage::De), PathBuf::from("2026/10/2026-10-21 1430 Aufnahme.md"));
         assert_eq!(
             recording_file_name(&c, Some("Budget: Q1/Q2?"), UiLanguage::En),
             PathBuf::from("2026/10/2026-10-21 1430 Budget Q1 Q2.md")

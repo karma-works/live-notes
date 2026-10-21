@@ -205,9 +205,7 @@ impl Note {
     }
 
     pub fn transcript_lines(&self) -> Vec<TranscriptLine> {
-        self.section(&SectionKind::Transcript)
-            .map(|s| s.body.lines().filter_map(TranscriptLine::parse).collect())
-            .unwrap_or_default()
+        self.section(&SectionKind::Transcript).map(|s| s.body.lines().filter_map(TranscriptLine::parse).collect()).unwrap_or_default()
     }
 
     /// A new recording note with empty sections in the UI language (SPEC §8.1).
@@ -241,7 +239,7 @@ impl Note {
             *by_lang.entry(s.lang.clone()).or_default() += s.duration_ms().max(1);
         }
         let mut v: Vec<_> = by_lang.into_iter().collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1));
+        v.sort_by_key(|x| std::cmp::Reverse(x.1));
         langs.extend(v.into_iter().map(|(l, _)| l));
         if let Some(f) = self.front.as_mut() {
             f.languages = langs;
@@ -315,10 +313,9 @@ pub fn toggle_task(text: &str, line_idx: usize) -> Option<String> {
     let after = &rest[1..];
     let new = if let Some(r) = after.strip_prefix(" [ ]") {
         format!("{}{} [x]{}", &line[..indent], bullet, r)
-    } else if let Some(r) = after.strip_prefix(" [x]").or_else(|| after.strip_prefix(" [X]")) {
-        format!("{}{} [ ]{}", &line[..indent], bullet, r)
     } else {
-        return None;
+        let r = after.strip_prefix(" [x]").or_else(|| after.strip_prefix(" [X]"))?;
+        format!("{}{} [ ]{}", &line[..indent], bullet, r)
     };
     *line = new;
     Some(lines.concat())
@@ -358,7 +355,14 @@ mod tests {
         let mut n = Note::new_recording("X".into(), created, "local/whisper", UiLanguage::De);
         let segs = vec![
             Segment { channel: Channel::Me, start_ms: 3000, end_ms: 5000, lang: "de".into(), text: "Hallo".into(), lang_confidence: 0.9 },
-            Segment { channel: Channel::Others, start_ms: 9000, end_ms: 20000, lang: "zh".into(), text: "大家好".into(), lang_confidence: 0.9 },
+            Segment {
+                channel: Channel::Others,
+                start_ms: 9000,
+                end_ms: 20000,
+                lang: "zh".into(),
+                text: "大家好".into(),
+                lang_confidence: 0.9,
+            },
         ];
         n.set_transcript(&segs, UiLanguage::De);
         n.set_section(SectionKind::Summary, "Kurz.", UiLanguage::De);

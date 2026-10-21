@@ -12,6 +12,7 @@ members = [
     "crates/ln-models",
     "crates/ln-core",
     "crates/ln-bench",
+    "crates/ln-app",
 ]
 # ln-app (GPUI) is a separate member so the non-UI crates build without Xcode.
 exclude = []

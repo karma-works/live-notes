@@ -96,7 +96,11 @@ impl Core {
         let s = g.as_ref()?;
         let ui = self.ui_language();
         let st = s.state.lock();
-        let text: String = st.segments.iter().map(|x| format!("[{}] {}: {}\n", ln_notes::format_timestamp(x.start_ms), x.channel.label(ui), x.text)).collect();
+        let text: String = st
+            .segments
+            .iter()
+            .map(|x| format!("[{}] {}: {}\n", ln_notes::format_timestamp(x.start_ms), x.channel.label(ui), x.text))
+            .collect();
         let n = text.chars().count();
         Some(if n > max_chars { text.chars().skip(n - max_chars).collect() } else { text })
     }
@@ -123,8 +127,16 @@ impl Core {
         let cap = Capture::start(&cfg).map_err(|e| {
             let _ = std::fs::remove_file(&note_path);
             Error::User(match e {
-                ln_audio::Error::Mic(_) => tr(ui, "Kein Zugriff auf das Mikrofon. Erlaube ihn in den Systemeinstellungen → Datenschutz.", "No microphone access. Allow it in System Settings → Privacy."),
-                ln_audio::Error::System(_) => tr(ui, "Kein Zugriff auf System-Audio. Erlaube „Bildschirm- und Systemaudioaufnahme“ in den Systemeinstellungen.", "No access to system audio. Allow audio recording in System Settings → Privacy."),
+                ln_audio::Error::Mic(_) => tr(
+                    ui,
+                    "Kein Zugriff auf das Mikrofon. Erlaube ihn in den Systemeinstellungen → Datenschutz.",
+                    "No microphone access. Allow it in System Settings → Privacy.",
+                ),
+                ln_audio::Error::System(_) => tr(
+                    ui,
+                    "Kein Zugriff auf System-Audio. Erlaube „Bildschirm- und Systemaudioaufnahme“ in den Systemeinstellungen.",
+                    "No access to system audio. Allow audio recording in System Settings → Privacy.",
+                ),
                 ln_audio::Error::File(f) => f,
             })
         })?;
@@ -147,10 +159,7 @@ impl Core {
             let tx = asr_tx.clone();
             let stop = stop.clone();
             let silero = self.models().file("silero-vad-v5", 0).filter(|p| p.exists());
-            std::thread::Builder::new()
-                .name("ln-audio".into())
-                .spawn(move || audio_loop(rx, tx, stop, silero))
-                .expect("audio thread")
+            std::thread::Builder::new().name("ln-audio".into()).spawn(move || audio_loop(rx, tx, stop, silero)).expect("audio thread")
         };
         let asr_thread = {
             let me = self.clone();
@@ -158,7 +167,8 @@ impl Core {
             let path = note_path.clone();
             let id = note_id.clone();
             let tn = transcriber_name.clone();
-            let mut engine = AsrEngine::new(transcriber, PostProcessor::new(settings.languages.chinese_script), settings.languages.mine.clone());
+            let mut engine =
+                AsrEngine::new(transcriber, PostProcessor::new(settings.languages.chinese_script), settings.languages.mine.clone());
             std::thread::Builder::new()
                 .name("ln-asr".into())
                 .spawn(move || {
@@ -191,10 +201,21 @@ impl Core {
         let s = self.settings();
         if mode != TranscriptionMode::Local {
             if s.privacy.offline_mode {
-                return Err(Error::User(tr(ui, "Offline-Modus ist an. Stelle die Transkription auf „Lokal“.", "Offline mode is on. Switch transcription to Local.")));
+                return Err(Error::User(tr(
+                    ui,
+                    "Offline-Modus ist an. Stelle die Transkription auf „Lokal“.",
+                    "Offline mode is on. Switch transcription to Local.",
+                )));
+            }
+            if self.cost_limit_reached() {
+                return Err(Error::User(self.unavailable_text(&crate::ai::Unavailable::CostLimit)));
             }
             if !self.has_api_key(&s.transcription.openai_provider) {
-                return Err(Error::User(tr(ui, "Für OpenAI-Transkription fehlt der OpenAI-Schlüssel (Einstellungen → Transkription).", "OpenAI transcription needs an OpenAI key (Settings → Transcription).")));
+                return Err(Error::User(tr(
+                    ui,
+                    "Für OpenAI-Transkription fehlt der OpenAI-Schlüssel (Einstellungen → Transkription).",
+                    "OpenAI transcription needs an OpenAI key (Settings → Transcription).",
+                )));
             }
             let c = self.client_for(&s.transcription.openai_provider).ok_or_else(|| Error::User("provider".into()))?;
             // v1.0: "live" uses the same per-section REST path (Realtime adapter is v1.1, SPEC §16).
@@ -211,7 +232,13 @@ impl Core {
             .file(&id, 0)
             .filter(|p| p.exists())
             .or_else(|| std::env::var_os("LN_WHISPER_MODEL").map(PathBuf::from))
-            .ok_or_else(|| Error::User(tr(ui, "Das Transkriptionsmodell wird noch geladen. Bitte warte, bis der Download fertig ist.", "The transcription model is still downloading. Wait until it has finished.")))?;
+            .ok_or_else(|| {
+                Error::User(tr(
+                    ui,
+                    "Das Transkriptionsmodell wird noch geladen. Bitte warte, bis der Download fertig ist.",
+                    "The transcription model is still downloading. Wait until it has finished.",
+                ))
+            })?;
         #[cfg(feature = "whisper")]
         {
             let name = id.trim_end_matches("-q5_0").trim_end_matches("-q8_0").to_string();
@@ -365,7 +392,16 @@ fn audio_loop(rx: Receiver<ln_audio::Tagged>, tx: Sender<Job>, stop: Arc<AtomicB
 }
 
 #[allow(clippy::too_many_arguments)]
-fn asr_loop(core: &Arc<Core>, engine: &mut AsrEngine, rx: Receiver<Job>, state: &Arc<Mutex<State>>, path: &Path, note_id: &str, created: DateTime<FixedOffset>, tname: &Arc<Mutex<String>>) {
+fn asr_loop(
+    core: &Arc<Core>,
+    engine: &mut AsrEngine,
+    rx: Receiver<Job>,
+    state: &Arc<Mutex<State>>,
+    path: &Path,
+    note_id: &str,
+    created: DateTime<FixedOffset>,
+    tname: &Arc<Mutex<String>>,
+) {
     let mut cloud_seconds = 0.0f64;
     let cloud = !engine.transcriber_name().starts_with("local/");
     let mut fell_back = false;
@@ -381,7 +417,11 @@ fn asr_loop(core: &Arc<Core>, engine: &mut AsrEngine, rx: Receiver<Job>, state: 
                         *engine = AsrEngine::new(local, PostProcessor::new(s.languages.chinese_script), s.languages.mine.clone());
                         *tname.lock() = engine.transcriber_name();
                         fell_back = true;
-                        core.emit(CoreEvent::Notice(tr(core.ui_language(), "Keine Verbindung zu OpenAI – es wird lokal weiter transkribiert.", "Lost connection to OpenAI – transcribing locally now.")));
+                        core.emit(CoreEvent::Notice(tr(
+                            core.ui_language(),
+                            "Keine Verbindung zu OpenAI – es wird lokal weiter transkribiert.",
+                            "Lost connection to OpenAI – transcribing locally now.",
+                        )));
                         core.emit(CoreEvent::RecordingChanged);
                         r = engine.process(&p, None);
                     }
@@ -439,9 +479,19 @@ fn asr_loop(core: &Arc<Core>, engine: &mut AsrEngine, rx: Receiver<Job>, state: 
 }
 
 /// Writes the note: keeps whatever is in the file, replaces notes/transcript/pinned sections.
-fn write_note(core: &Core, path: &Path, st: &State, created: DateTime<FixedOffset>, elapsed: Option<Duration>, transcriber: &str) -> Result<()> {
+fn write_note(
+    core: &Core,
+    path: &Path,
+    st: &State,
+    created: DateTime<FixedOffset>,
+    elapsed: Option<Duration>,
+    transcriber: &str,
+) -> Result<()> {
     let ui = core.ui_language();
-    let mut note = std::fs::read_to_string(path).ok().and_then(|t| Note::parse(&t).ok()).unwrap_or_else(|| Note::new_recording(ulid::Ulid::new().to_string(), created, transcriber, ui));
+    let mut note = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| Note::parse(&t).ok())
+        .unwrap_or_else(|| Note::new_recording(ulid::Ulid::new().to_string(), created, transcriber, ui));
     if let Some(f) = note.front.as_mut() {
         f.transcription = Some(transcriber.to_string());
         if let Some(e) = elapsed {
@@ -465,11 +515,18 @@ pub fn recover(core: &Arc<Core>) {
     let ui = core.ui_language();
     for s in sessions {
         let created = DateTime::parse_from_rfc3339(&s.created).unwrap_or_else(|_| Local::now().fixed_offset());
-        let mut note = std::fs::read_to_string(&s.note_path).ok().and_then(|t| Note::parse(&t).ok()).unwrap_or_else(|| Note::new_recording(s.note_id.clone(), created, "recovered", ui));
+        let mut note = std::fs::read_to_string(&s.note_path)
+            .ok()
+            .and_then(|t| Note::parse(&t).ok())
+            .unwrap_or_else(|| Note::new_recording(s.note_id.clone(), created, "recovered", ui));
         note.set_transcript(&s.segments, ui);
         if atomic_write(&s.note_path, &note.render()).is_ok() {
             let _ = std::fs::remove_file(&s.journal);
-            core.emit(CoreEvent::Notice(tr(ui, "Eine unterbrochene Aufnahme wurde wiederhergestellt.", "An interrupted recording was restored.")));
+            core.emit(CoreEvent::Notice(tr(
+                ui,
+                "Eine unterbrochene Aufnahme wurde wiederhergestellt.",
+                "An interrupted recording was restored.",
+            )));
         }
     }
 }

@@ -5,7 +5,8 @@ use objc2_pdf_kit::PDFDocument;
 pub fn pages(path: &std::path::Path) -> Result<Vec<String>> {
     objc2::rc::autoreleasepool(|_| unsafe {
         let url = super::file_url(path);
-        let doc = PDFDocument::initWithURL(PDFDocument::alloc(), &url).ok_or_else(|| Error::Other(format!("cannot open {}", path.display())))?;
+        let doc =
+            PDFDocument::initWithURL(PDFDocument::alloc(), &url).ok_or_else(|| Error::Other(format!("cannot open {}", path.display())))?;
         let n = doc.pageCount();
         let mut out = Vec::with_capacity(n);
         for i in 0..n {

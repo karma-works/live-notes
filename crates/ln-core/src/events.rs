@@ -8,21 +8,48 @@ use std::path::PathBuf;
 pub enum CoreEvent {
     SettingsChanged,
     ModelsChanged,
-    DownloadProgress { model: &'static str, fraction: f32 },
+    DownloadProgress {
+        model: &'static str,
+        fraction: f32,
+    },
     SourcesChanged,
-    IndexProgress { files: i64, chunks: i64, embedded: i64 },
+    IndexProgress {
+        files: i64,
+        chunks: i64,
+        embedded: i64,
+    },
     NotesChanged,
     /// A note file changed on disk (external edit or the app's own write).
     NoteFileChanged(PathBuf),
     RecordingChanged,
-    Segment { index: usize, segment: Segment },
-    SegmentReplaced { index: usize, segment: Segment },
+    Segment {
+        index: usize,
+        segment: Segment,
+    },
+    SegmentReplaced {
+        index: usize,
+        segment: Segment,
+    },
     /// Summary, tasks and title written; `path` is the (possibly renamed) file.
-    SummaryReady { path: PathBuf },
+    SummaryReady {
+        path: PathBuf,
+    },
     Suggestion(SuggestionCard),
-    SuggestionAnswer { id: u64, text: String, done: bool },
-    Answer { id: u64, text: String, done: bool, citations: Vec<Citation> },
-    ProviderTested { provider: String, result: Result<(), String> },
+    SuggestionAnswer {
+        id: u64,
+        text: String,
+        done: bool,
+    },
+    Answer {
+        id: u64,
+        text: String,
+        done: bool,
+        citations: Vec<Citation>,
+    },
+    ProviderTested {
+        provider: String,
+        result: Result<(), String>,
+    },
     /// Short user-facing message (already localised).
     Notice(String),
 }

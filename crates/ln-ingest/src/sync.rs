@@ -14,7 +14,14 @@ pub struct SyncReport {
 
 /// Brings one source up to date: new and changed files are (re)indexed, deleted files removed.
 /// Changes are found by size + mtime, confirmed by BLAKE3 hash (SPEC §5 F4).
-pub fn sync_source(index: &mut Index, source_id: i64, root: &Path, scan_opts: &ScanOptions, opts: &ExtractOptions<'_>, cancel: &dyn Fn() -> bool) -> crate::Result<SyncReport> {
+pub fn sync_source(
+    index: &mut Index,
+    source_id: i64,
+    root: &Path,
+    scan_opts: &ScanOptions,
+    opts: &ExtractOptions<'_>,
+    cancel: &dyn Fn() -> bool,
+) -> crate::Result<SyncReport> {
     let files = scan(root, scan_opts);
     let mut report = SyncReport { scanned: files.len(), ..Default::default() };
     let present: std::collections::HashSet<_> = files.iter().map(|f| f.path.clone()).collect();

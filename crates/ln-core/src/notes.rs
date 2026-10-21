@@ -32,7 +32,8 @@ impl Core {
                 let note = Note::parse(&text).unwrap_or_default();
                 let stem = f.path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
                 let title = note.title().filter(|t| !t.trim().is_empty()).unwrap_or(stem);
-                let folder = f.path.parent().and_then(|p| p.strip_prefix(&root).ok()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                let folder =
+                    f.path.parent().and_then(|p| p.strip_prefix(&root).ok()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
                 let front = note.front.clone().unwrap_or_default();
                 NoteEntry {
                     title,
@@ -46,7 +47,7 @@ impl Core {
                 }
             })
             .collect();
-        out.sort_by(|a, b| b.created.unwrap_or(b.modified).cmp(&a.created.unwrap_or(a.modified)));
+        out.sort_by_key(|n| std::cmp::Reverse(n.created.unwrap_or(n.modified)));
         out
     }
 

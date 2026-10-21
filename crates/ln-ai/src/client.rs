@@ -128,7 +128,8 @@ impl Client {
             .enumerate()
             .map(|(i, d)| {
                 let idx = d["index"].as_u64().map(|x| x as usize).unwrap_or(i);
-                let e = d["embedding"].as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect()).unwrap_or_default();
+                let e =
+                    d["embedding"].as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect()).unwrap_or_default();
                 (idx, e)
             })
             .collect();
@@ -223,7 +224,14 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn provider(url: &str, kind: ProviderKind) -> Provider {
-        Provider { id: "t".into(), name: "Test".into(), kind, base_url: url.into(), headers: vec![("X-Title".into(), "Live Notes".into())], is_cloud: true }
+        Provider {
+            id: "t".into(),
+            name: "Test".into(),
+            kind,
+            base_url: url.into(),
+            headers: vec![("X-Title".into(), "Live Notes".into())],
+            is_cloud: true,
+        }
     }
 
     #[tokio::test]
@@ -252,7 +260,9 @@ mod tests {
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hal\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n";
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream").set_body_raw(sse, "text/event-stream"))
+            .respond_with(
+                ResponseTemplate::new(200).insert_header("content-type", "text/event-stream").set_body_raw(sse, "text/event-stream"),
+            )
             .mount(&s)
             .await;
         let c = Client::new(provider(&s.uri(), ProviderKind::Ollama), None);

@@ -185,7 +185,14 @@ impl Core {
         let p = path.to_path_buf();
         self.update_settings(|s| {
             if !s.sources.iter().any(|x| x.path == p) {
-                s.sources.push(ln_types::SourceSetting { path: p, include_subdirs: true, excludes: vec![], paused: false, read_only: false, local_only: false });
+                s.sources.push(ln_types::SourceSetting {
+                    path: p,
+                    include_subdirs: true,
+                    excludes: vec![],
+                    paused: false,
+                    read_only: false,
+                    local_only: false,
+                });
             }
         });
         self.events.send(CoreEvent::SourcesChanged);

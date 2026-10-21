@@ -75,7 +75,9 @@ impl Downloader {
             tokio::fs::remove_file(&part).await?;
             have = 0;
         }
-        let url = std::env::var("LN_MODEL_BASE_URL").map(|b| format!("{}/{}", b.trim_end_matches('/'), f.name)).unwrap_or_else(|_| f.url.to_string());
+        let url = std::env::var("LN_MODEL_BASE_URL")
+            .map(|b| format!("{}/{}", b.trim_end_matches('/'), f.name))
+            .unwrap_or_else(|_| f.url.to_string());
         let mut req = self.http.get(&url);
         if have > 0 {
             req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
@@ -159,7 +161,12 @@ mod tests {
     #[tokio::test]
     async fn downloads_resumes_and_verifies() {
         let s = MockServer::start().await;
-        Mock::given(method("GET")).and(path("/m.bin")).and(header("range", "bytes=6-")).respond_with(ResponseTemplate::new(206).set_body_bytes(&DATA[6..])).mount(&s).await;
+        Mock::given(method("GET"))
+            .and(path("/m.bin"))
+            .and(header("range", "bytes=6-"))
+            .respond_with(ResponseTemplate::new(206).set_body_bytes(&DATA[6..]))
+            .mount(&s)
+            .await;
         Mock::given(method("GET")).and(path("/m.bin")).respond_with(ResponseTemplate::new(200).set_body_bytes(DATA)).mount(&s).await;
         // SAFETY: tests in this crate do not read the variable concurrently.
         unsafe { std::env::set_var("LN_MODEL_BASE_URL", s.uri()) };

@@ -14,13 +14,16 @@ use objc2_foundation::{NSArray, NSDictionary, NSMutableDictionary, NSNumber, NSO
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
+/// The IO callback: (now, input data, input time, output data, output time).
+type IoBlock = block2::RcBlock<
+    dyn Fn(NonNull<AudioTimeStamp>, NonNull<AudioBufferList>, NonNull<AudioTimeStamp>, NonNull<AudioBufferList>, NonNull<AudioTimeStamp>),
+>;
+
 struct TapStream {
     tap: AudioObjectID,
     aggregate: AudioObjectID,
     proc_id: AudioDeviceIOProcID,
-    _block: block2::RcBlock<
-        dyn Fn(NonNull<AudioTimeStamp>, NonNull<AudioBufferList>, NonNull<AudioTimeStamp>, NonNull<AudioBufferList>, NonNull<AudioTimeStamp>),
-    >,
+    _block: IoBlock,
     running: bool,
 }
 
@@ -91,12 +94,14 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
     unsafe {
         // Exclude our own process so app sounds never end up in the transcript.
         let pid = std::process::id() as i32;
-        let own: AudioObjectID = get_property(kAudioObjectSystemObject as AudioObjectID, kAudioHardwarePropertyTranslatePIDToProcessObject, Some(&pid.to_ne_bytes())).unwrap_or(0);
-        let excluded: Retained<NSArray<NSNumber>> = if own != 0 {
-            NSArray::from_retained_slice(&[NSNumber::new_u32(own)])
-        } else {
-            NSArray::new()
-        };
+        let own: AudioObjectID = get_property(
+            kAudioObjectSystemObject as AudioObjectID,
+            kAudioHardwarePropertyTranslatePIDToProcessObject,
+            Some(&pid.to_ne_bytes()),
+        )
+        .unwrap_or(0);
+        let excluded: Retained<NSArray<NSNumber>> =
+            if own != 0 { NSArray::from_retained_slice(&[NSNumber::new_u32(own)]) } else { NSArray::new() };
         let desc = CATapDescription::initStereoGlobalTapButExcludeProcesses(CATapDescription::alloc(), &excluded);
         let uuid = NSUUID::new();
         desc.setUUID(&uuid);
@@ -116,7 +121,8 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
             }
         };
 
-        let out_dev: AudioObjectID = get_property(kAudioObjectSystemObject as AudioObjectID, kAudioHardwarePropertyDefaultSystemOutputDevice, None)?;
+        let out_dev: AudioObjectID =
+            get_property(kAudioObjectSystemObject as AudioObjectID, kAudioHardwarePropertyDefaultSystemOutputDevice, None)?;
         let out_uid = get_string(out_dev, kAudioDevicePropertyDeviceUID)?;
         let tap_uid = uuid.UUIDString().to_string();
         let agg_uid = NSUUID::new().UUIDString().to_string();
@@ -143,7 +149,9 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
 
         let cf_dict: &CFDictionary = &*(Retained::as_ptr(&dict) as *const CFDictionary);
         let mut aggregate: AudioObjectID = 0;
-        if let Err(e) = check("AudioHardwareCreateAggregateDevice", AudioHardwareCreateAggregateDevice(cf_dict, NonNull::from(&mut aggregate))) {
+        if let Err(e) =
+            check("AudioHardwareCreateAggregateDevice", AudioHardwareCreateAggregateDevice(cf_dict, NonNull::from(&mut aggregate)))
+        {
             AudioHardwareDestroyProcessTap(tap);
             return Err(e);
         }
@@ -152,7 +160,11 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
         let channels = format.mChannelsPerFrame.max(1) as usize;
         let interleaved = format.mFormatFlags & objc2_core_audio_types::kAudioFormatFlagIsNonInterleaved == 0;
         let block = block2::RcBlock::new(
-            move |_now: NonNull<AudioTimeStamp>, input: NonNull<AudioBufferList>, _t: NonNull<AudioTimeStamp>, _o: NonNull<AudioBufferList>, _ot: NonNull<AudioTimeStamp>| {
+            move |_now: NonNull<AudioTimeStamp>,
+                  input: NonNull<AudioBufferList>,
+                  _t: NonNull<AudioTimeStamp>,
+                  _o: NonNull<AudioBufferList>,
+                  _ot: NonNull<AudioTimeStamp>| {
                 let list = input.as_ref();
                 let n = list.mNumberBuffers as usize;
                 let bufs = std::slice::from_raw_parts(list.mBuffers.as_ptr(), n);

@@ -65,7 +65,8 @@ pub fn summary(transcript: &str, my_notes: &str, out_lang: &str, channel_labels:
          Be factual. Do not invent content. No filler.",
         lang = lang_name(out_lang)
     );
-    let user = format!("User's own notes:\n{}\n\nTranscript:\n{}", if my_notes.trim().is_empty() { "(none)" } else { my_notes }, transcript);
+    let user =
+        format!("User's own notes:\n{}\n\nTranscript:\n{}", if my_notes.trim().is_empty() { "(none)" } else { my_notes }, transcript);
     vec![Message::system(sys), Message::user(user)]
 }
 
@@ -216,7 +217,8 @@ mod tests {
 
     #[test]
     fn suggestion_query_accepts_german_keys() {
-        let q = parse_suggestion_query("{\"relevant\":true,\"frage_an_mich\":true,\"suchanfrage\":\"Angebot Li\",\"sprache\":\"de\"}").unwrap();
+        let q =
+            parse_suggestion_query("{\"relevant\":true,\"frage_an_mich\":true,\"suchanfrage\":\"Angebot Li\",\"sprache\":\"de\"}").unwrap();
         assert!(q.question_to_me);
         assert_eq!(q.query, "Angebot Li");
     }

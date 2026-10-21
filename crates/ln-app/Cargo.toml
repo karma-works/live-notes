@@ -1,0 +1,45 @@
+[package]
+name = "ln-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Live Notes desktop app (GPUI)"
+default-run = "live-notes"
+
+[[bin]]
+name = "live-notes"
+path = "src/main.rs"
+
+[features]
+# Renders a scripted tour of all views to PNG files (docs/screenshots). Needs no screen permission.
+screenshots = ["dep:gpui-pre", "dep:gpui-pre-platform"]
+
+[dependencies]
+ln-core.workspace = true
+ln-types.workspace = true
+ln-notes.workspace = true
+ln-index.workspace = true
+ln-platform.workspace = true
+ln-models.workspace = true
+gpui-kit = { version = "0.8", features = [
+    "tree-sitter-markdown",
+    "tree-sitter-markdown-inline",
+    "tree-sitter-rust",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-bash",
+    "tree-sitter-yaml",
+    "tree-sitter-toml",
+    "tree-sitter-sql",
+] }
+futures.workspace = true
+parking_lot.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+global-hotkey = "0.7"
+tray-icon = "0.21"
+# Only for the screenshot tour: enables offscreen rendering in the GPUI the kit already uses.
+gpui-pre = { version = "=0.3.9", features = ["test-support"], optional = true }
+gpui-pre-platform = { version = "=0.3.9", features = ["test-support"], optional = true }

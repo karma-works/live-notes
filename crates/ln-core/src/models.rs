@@ -39,14 +39,20 @@ struct DlState {
 pub struct ModelManager {
     dir: PathBuf,
     state: Mutex<HashMap<&'static str, DlState>>,
-    embed: Mutex<Option<LlamaServer>>,
+    embed: Arc<Mutex<Option<LlamaServer>>>,
     chat: Mutex<Option<LlamaServer>>,
     downloading: Mutex<bool>,
 }
 
 impl ModelManager {
     pub fn new(dir: PathBuf) -> Self {
-        ModelManager { dir, state: Mutex::new(HashMap::new()), embed: Mutex::new(None), chat: Mutex::new(None), downloading: Mutex::new(false) }
+        ModelManager {
+            dir,
+            state: Mutex::new(HashMap::new()),
+            embed: Arc::new(Mutex::new(None)),
+            chat: Mutex::new(None),
+            downloading: Mutex::new(false),
+        }
     }
 
     pub fn installed(&self, id: &str) -> bool {
@@ -65,6 +71,25 @@ impl ModelManager {
         if let Some(mut s) = self.chat.lock().take() {
             s.stop();
         }
+    }
+
+    pub fn embed_server_running(&self) -> bool {
+        self.embed.try_lock().is_some_and(|mut g| g.as_mut().is_some_and(|s| s.is_running()))
+    }
+
+    /// Starts the embeddings server in the background (first search after launch).
+    pub fn warm_embed_server(&self) {
+        let slot = self.embed.clone();
+        let Some(path) = self.file("embeddinggemma-300m", 0).filter(|p| p.exists()) else { return };
+        std::thread::spawn(move || {
+            let Some(mut g) = slot.try_lock() else { return };
+            if g.as_mut().is_some_and(|s| s.is_running()) {
+                return;
+            }
+            if let Ok(s) = LlamaServer::start(ServerRole::Embeddings, &path, None, 2048) {
+                *g = Some(s);
+            }
+        });
     }
 
     /// Base URL of a running embeddings server, starting it if needed.
@@ -101,12 +126,12 @@ impl ModelManager {
     }
 
     fn unload_idle(&self, after: Duration) {
-        for slot in [&self.embed, &self.chat] {
+        for slot in [&*self.embed, &self.chat] {
             let mut g = slot.lock();
-            if g.as_ref().is_some_and(|s| s.idle_for() > after) {
-                if let Some(mut s) = g.take() {
-                    s.stop();
-                }
+            if g.as_ref().is_some_and(|s| s.idle_for() > after)
+                && let Some(mut s) = g.take()
+            {
+                s.stop();
             }
         }
     }
@@ -147,7 +172,12 @@ pub fn spawn_idle_unloader(core: &Arc<Core>) {
 impl Core {
     /// Models the first-run screen offers to download (SPEC §4, §16: v1.0 without local image model).
     pub fn first_run_plan(&self, assistant_local: bool) -> Vec<&'static ModelSpec> {
-        let mut v = vec![by_id("whisper-large-v3-turbo-q5_0").unwrap(), by_id("whisper-base-q8_0").unwrap(), by_id("silero-vad-v5").unwrap(), by_id("embeddinggemma-300m").unwrap()];
+        let mut v = vec![
+            by_id("whisper-large-v3-turbo-q5_0").unwrap(),
+            by_id("whisper-base-q8_0").unwrap(),
+            by_id("silero-vad-v5").unwrap(),
+            by_id("embeddinggemma-300m").unwrap(),
+        ];
         if assistant_local {
             v.push(ln_models::recommended_llm(ram_gb()));
         }
@@ -174,7 +204,8 @@ impl Core {
                     s.roles.assistant = ln_types::RoleConfig { provider: "openrouter".into(), model: "google/gemma-4-26b-a4b-it".into() };
                 }
                 AssistantChoice::Local => {
-                    s.roles.assistant = ln_types::RoleConfig { provider: "local".into(), model: ln_models::recommended_llm(ram_gb()).id.into() };
+                    s.roles.assistant =
+                        ln_types::RoleConfig { provider: "local".into(), model: ln_models::recommended_llm(ram_gb()).id.into() };
                 }
                 AssistantChoice::Custom { base_url, model, .. } => {
                     s.providers.retain(|p| p.id != "custom");
@@ -222,10 +253,15 @@ impl Core {
     /// Downloads in order, smallest first (SPEC §4). Already installed models are skipped.
     pub fn download_models(self: &Arc<Self>, ids: &[&'static str]) {
         if self.settings().privacy.offline_mode {
-            self.emit(CoreEvent::Notice(tr(self.ui_language(), "Offline-Modus ist an – keine Downloads.", "Offline mode is on – no downloads.")));
+            self.emit(CoreEvent::Notice(tr(
+                self.ui_language(),
+                "Offline-Modus ist an – keine Downloads.",
+                "Offline mode is on – no downloads.",
+            )));
             return;
         }
-        let mut specs: Vec<&'static ModelSpec> = ids.iter().filter_map(|i| by_id(i)).filter(|s| !is_installed(&self.models.dir, s)).collect();
+        let mut specs: Vec<&'static ModelSpec> =
+            ids.iter().filter_map(|i| by_id(i)).filter(|s| !is_installed(&self.models.dir, s)).collect();
         specs.sort_by_key(|s| s.total_size());
         if specs.is_empty() {
             return;

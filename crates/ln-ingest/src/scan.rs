@@ -23,7 +23,21 @@ pub struct ScannedFile {
 }
 
 /// Directories never worth indexing (SPEC §5 F4).
-const SKIP_DIRS: &[&str] = &["node_modules", ".git", "target", "Library", ".livenotes", "__pycache__", ".venv", "venv", ".Trash", "build", "dist", ".cache", ".idea"];
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "Library",
+    ".livenotes",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".Trash",
+    "build",
+    "dist",
+    ".cache",
+    ".idea",
+];
 
 /// Lists indexable files: respects `.gitignore`/`.ignore`, skips hidden files, big files and
 /// unsupported types.
@@ -80,7 +94,8 @@ mod tests {
         std::fs::write(r.join(".gitignore"), "secret.md\n").unwrap();
         std::fs::write(r.join("binary.exe"), "x").unwrap();
         std::fs::write(r.join(".hidden.md"), "h").unwrap();
-        let names: Vec<String> = scan(r, &ScanOptions::default()).iter().map(|f| f.path.strip_prefix(r).unwrap().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> =
+            scan(r, &ScanOptions::default()).iter().map(|f| f.path.strip_prefix(r).unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names, vec!["a.md", "sub/b.txt"]);
         let flat = scan(r, &ScanOptions { include_subdirs: false, ..Default::default() });
         assert_eq!(flat.len(), 1);

@@ -8,11 +8,8 @@ const SHORT_MS: u64 = 2_000;
 /// any languages; they are renormalised over `allowed`. Returns (language, confidence).
 pub fn choose_language(probs: &[(Lang, f32)], allowed: &[Lang], previous: Option<&Lang>, duration_ms: u64) -> (Lang, f32) {
     let fallback = || previous.cloned().or_else(|| allowed.first().cloned()).unwrap_or_else(|| Lang::new("en"));
-    let mut cand: Vec<(Lang, f32)> = if allowed.is_empty() {
-        probs.to_vec()
-    } else {
-        probs.iter().filter(|(l, _)| allowed.contains(l)).cloned().collect()
-    };
+    let mut cand: Vec<(Lang, f32)> =
+        if allowed.is_empty() { probs.to_vec() } else { probs.iter().filter(|(l, _)| allowed.contains(l)).cloned().collect() };
     let total: f32 = cand.iter().map(|(_, p)| *p).sum();
     if total <= f32::EPSILON {
         return (fallback(), 0.0);

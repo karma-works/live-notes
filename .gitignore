@@ -4,3 +4,4 @@
 Cargo.lock.bak
 /dist/
 /.dev-data/
+/.dev-tour/

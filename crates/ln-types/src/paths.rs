@@ -13,16 +13,10 @@ pub struct AppPaths {
 
 impl AppPaths {
     pub fn from_env() -> Self {
-        let data_dir = std::env::var_os("LN_DATA_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(default_data_dir);
-        let default_notes_dir = std::env::var_os("LN_NOTES_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                dirs::document_dir()
-                    .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Documents"))
-                    .join("Live Notes")
-            });
+        let data_dir = std::env::var_os("LN_DATA_DIR").map(PathBuf::from).unwrap_or_else(default_data_dir);
+        let default_notes_dir = std::env::var_os("LN_NOTES_DIR").map(PathBuf::from).unwrap_or_else(|| {
+            dirs::document_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Documents")).join("Live Notes")
+        });
         let logs_dir = if cfg!(target_os = "macos") && std::env::var_os("LN_DATA_DIR").is_none() {
             dirs::home_dir().unwrap_or_default().join("Library/Logs/Live Notes")
         } else {
@@ -33,11 +27,7 @@ impl AppPaths {
 
     /// Paths rooted in one directory, for tests.
     pub fn in_dir(root: &Path) -> Self {
-        AppPaths {
-            data_dir: root.join("data"),
-            default_notes_dir: root.join("notes"),
-            logs_dir: root.join("logs"),
-        }
+        AppPaths { data_dir: root.join("data"), default_notes_dir: root.join("notes"), logs_dir: root.join("logs") }
     }
 
     pub fn settings_file(&self) -> PathBuf {

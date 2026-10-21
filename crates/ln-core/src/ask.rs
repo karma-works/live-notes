@@ -28,6 +28,9 @@ pub struct Citation {
     pub snippet: String,
 }
 
+/// Below this cosine similarity a purely semantic hit is dropped from search results.
+const WEAK_SIMILARITY: f32 = 0.35;
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static CANCELLED: AtomicU64 = AtomicU64::new(0);
 
@@ -38,8 +41,14 @@ impl Core {
         if query.trim().is_empty() {
             return vec![];
         }
-        let emb = if self.embedder_available() { self.embed(&[query.to_string()], true).ok().and_then(|mut v| v.pop()) } else { None };
-        self.index.lock().search(query, emb.as_deref(), filter, limit).unwrap_or_default()
+        let emb = if self.embedder_available() && self.embedder_warm() {
+            self.embed(&[query.to_string()], true).ok().and_then(|mut v| v.pop())
+        } else {
+            None
+        };
+        let hits = self.index.lock().search(query, emb.as_deref(), filter, limit).unwrap_or_default();
+        // A hit found only by meaning, and only weakly, is noise in a result list.
+        hits.into_iter().filter(|h| !(h.highlights.is_empty() && h.similarity.is_some_and(|s| s < WEAK_SIMILARITY))).collect()
     }
 
     /// Search results grouped by file (what the search panel shows).
@@ -97,13 +106,26 @@ impl Core {
         }
         ctx.extend(hits.iter().map(|h| ContextChunk { title: &h.title, text: &h.text }));
         if ctx.is_empty() {
-            return done(tr(self.ui_language(), "Dazu habe ich in deinen Notizen und Dateien nichts gefunden.", "Nothing about this in your notes and files."), vec![]);
+            return done(
+                tr(
+                    self.ui_language(),
+                    "Dazu habe ich in deinen Notizen und Dateien nichts gefunden.",
+                    "Nothing about this in your notes and files.",
+                ),
+                vec![],
+            );
         }
         let offset = usize::from(transcript.is_some());
         let citations: Vec<Citation> = hits
             .iter()
             .enumerate()
-            .map(|(i, h)| Citation { n: i + 1 + offset, path: h.path.clone(), title: h.title.clone(), locator: h.locator.clone(), snippet: h.snippet.clone() })
+            .map(|(i, h)| Citation {
+                n: i + 1 + offset,
+                path: h.path.clone(),
+                title: h.title.clone(),
+                locator: h.locator.clone(),
+                snippet: h.snippet.clone(),
+            })
             .collect();
         let req = ChatRequest::new(role.model.clone(), prompts::answer(question, &ctx, history));
         let c = role.client.clone();

@@ -11,10 +11,17 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JournalEntry {
-    Start { note_id: String, note_path: PathBuf, created: String },
+    Start {
+        note_id: String,
+        note_path: PathBuf,
+        created: String,
+    },
     Segment(Segment),
     /// A segment replaced after a language correction.
-    Replace { index: usize, segment: Segment },
+    Replace {
+        index: usize,
+        segment: Segment,
+    },
     End,
 }
 
@@ -29,11 +36,7 @@ impl JournalWriter {
         let path = dir.join(format!("{note_id}.jsonl"));
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let mut w = JournalWriter { path, file };
-        w.append(&JournalEntry::Start {
-            note_id: note_id.into(),
-            note_path: note_path.to_path_buf(),
-            created: created.into(),
-        })?;
+        w.append(&JournalEntry::Start { note_id: note_id.into(), note_path: note_path.to_path_buf(), created: created.into() })?;
         Ok(w)
     }
 

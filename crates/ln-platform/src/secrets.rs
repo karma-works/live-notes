@@ -19,9 +19,7 @@ impl SecretStore for KeychainStore {
         keyring::Entry::new(SERVICE, key).ok()?.get_password().ok()
     }
     fn set(&self, key: &str, value: &str) -> crate::Result<()> {
-        keyring::Entry::new(SERVICE, key)
-            .and_then(|e| e.set_password(value))
-            .map_err(|e| crate::Error::Other(e.to_string()))
+        keyring::Entry::new(SERVICE, key).and_then(|e| e.set_password(value)).map_err(|e| crate::Error::Other(e.to_string()))
     }
     fn delete(&self, key: &str) -> crate::Result<()> {
         match keyring::Entry::new(SERVICE, key).and_then(|e| e.delete_credential()) {

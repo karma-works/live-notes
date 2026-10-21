@@ -1,6 +1,6 @@
 # Live Notes – Spezifikation v0.1 (Entwurf)
 
-Status: Entwurf zur Diskussion · Stand 2026-10-21 · Arbeitstitel „Live Notes“
+Status: v1.0 umgesetzt (siehe STATUS.md) · Stand 2026-10-21 · Arbeitstitel „Live Notes“
 
 Begleitdokumente:
 - [Foresight-Analyse](foresight-analyse.md)
@@ -866,6 +866,8 @@ Entschieden am 2026-10-21:
 - Live-Transkription optional über die Cloud, inkl. OpenAI `gpt-live-transcribe` (§5 F2, §9.2).
 
 ## 16. Umsetzungsentscheidungen für den ersten Durchlauf (verbindlich)
+
+Umsetzungsstand und Abweichungen: [STATUS.md](STATUS.md).
 
 Entschieden am 2026-10-21 nach Empfehlung. Bei Widerspruch zu früheren Abschnitten gilt dieser.
 

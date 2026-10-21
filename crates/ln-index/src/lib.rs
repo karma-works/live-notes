@@ -149,6 +149,8 @@ pub struct SearchHit {
     pub locator: Locator,
     pub lang: Option<String>,
     pub score: f64,
+    /// Cosine similarity to the query embedding, if the chunk was found by vector search.
+    pub similarity: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -403,8 +405,14 @@ impl Index {
         if has_cjk(text) {
             ranked.push(self.cjk_ids(text, pool)?);
         }
+        let mut sims: HashMap<i64, f32> = HashMap::new();
         if let Some(e) = query_embedding {
-            ranked.push(self.vec_ids(e, pool)?);
+            let v = self.vec_ids(e, pool)?;
+            for (id, d) in &v {
+                // int8 vectors are unit vectors scaled by 127: cos = 1 - d² / (2·127²).
+                sims.insert(*id, (1.0 - (d * d) / (2.0 * 127.0 * 127.0)) as f32);
+            }
+            ranked.push(v.into_iter().map(|(id, _)| id).collect());
         }
         let mut scores: HashMap<i64, f64> = HashMap::new();
         for list in &ranked {
@@ -416,9 +424,10 @@ impl Index {
         ids.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         let mut hits = Vec::new();
         for (id, score) in ids {
-            if let Some(h) = self.hit(id, score, text)?
+            if let Some(mut h) = self.hit(id, score, text)?
                 && filter_ok(&h, filter, &self.conn)?
             {
+                h.similarity = sims.get(&id).copied();
                 hits.push(h);
                 if hits.len() >= limit {
                     break;
@@ -454,10 +463,11 @@ impl Index {
         Ok(out)
     }
 
-    fn vec_ids(&self, e: &[f32], n: usize) -> Result<Vec<i64>> {
+    fn vec_ids(&self, e: &[f32], n: usize) -> Result<Vec<(i64, f64)>> {
         let q = quantize(e)?;
-        let mut st = self.conn.prepare("SELECT rowid FROM chunks_vec WHERE embedding MATCH vec_int8(?1) AND k = ?2 ORDER BY distance")?;
-        Ok(st.query_map(params![q, n as i64], |r| r.get(0))?.collect::<Result<_, _>>()?)
+        let mut st =
+            self.conn.prepare("SELECT rowid, distance FROM chunks_vec WHERE embedding MATCH vec_int8(?1) AND k = ?2 ORDER BY distance")?;
+        Ok(st.query_map(params![q, n as i64], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?)
     }
 
     fn hit(&self, chunk_id: i64, score: f64, query: &str) -> Result<Option<SearchHit>> {
@@ -482,6 +492,7 @@ impl Index {
                         snippet: snip,
                         highlights: hl,
                         score,
+                        similarity: None,
                     })
                 },
             )

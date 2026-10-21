@@ -27,16 +27,19 @@ pub fn summarize(core: &Arc<Core>, path: &Path) {
     let transcript: String = lines.iter().map(|l| format!("{}\n", l.format())).collect();
     let my_notes = note.section(&SectionKind::Notes).map(|s| s.body.clone()).unwrap_or_default();
     let s = core.settings();
-    let out_lang = s.languages.summary_language.clone().or_else(|| note.main_language()).map(|l| l.to_string()).unwrap_or_else(|| ui.code().into());
-    let labels: Vec<&str> = Channel::all().iter().flat_map(|c| [c.label(ln_types::UiLanguage::De), c.label(ln_types::UiLanguage::En)]).collect();
+    let out_lang =
+        s.languages.summary_language.clone().or_else(|| note.main_language()).map(|l| l.to_string()).unwrap_or_else(|| ui.code().into());
+    let labels: Vec<&str> =
+        Channel::all().iter().flat_map(|c| [c.label(ln_types::UiLanguage::De), c.label(ln_types::UiLanguage::En)]).collect();
     let note_id = note.front.as_ref().and_then(|f| f.id.clone());
-    let text = match core.chat_once(&role, prompts::summary(&transcript, &my_notes, &out_lang, &labels), true, "summary", note_id.as_deref()) {
-        Ok(t) => t,
-        Err(e) => {
-            core.emit(CoreEvent::Notice(format!("{} {e}", tr(ui, "Zusammenfassung fehlgeschlagen:", "Summary failed:"))));
-            return;
-        }
-    };
+    let text =
+        match core.chat_once(&role, prompts::summary(&transcript, &my_notes, &out_lang, &labels), true, "summary", note_id.as_deref()) {
+            Ok(t) => t,
+            Err(e) => {
+                core.emit(CoreEvent::Notice(format!("{} {e}", tr(ui, "Zusammenfassung fehlgeschlagen:", "Summary failed:"))));
+                return;
+            }
+        };
     let Some(sum) = prompts::parse_summary(&text) else {
         core.emit(CoreEvent::Notice(tr(ui, "Die Zusammenfassung konnte nicht gelesen werden.", "Couldn't read the summary.")));
         return;
@@ -67,9 +70,7 @@ pub fn summarize(core: &Arc<Core>, path: &Path) {
         return;
     }
     let mut final_path = path.to_path_buf();
-    if !manual
-        && let Some(created) = note.front.as_ref().and_then(|f| f.created)
-    {
+    if !manual && let Some(created) = note.front.as_ref().and_then(|f| f.created) {
         let name = recording_file_name(&created, Some(&sum.title), ui);
         let target = path.parent().unwrap_or(Path::new(".")).join(name.file_name().unwrap());
         let target = unique_path(&target, Some(path));

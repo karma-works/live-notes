@@ -92,6 +92,23 @@ impl LiveSuggester {
     }
 }
 
+/// Similarity above which a semantic hit counts (EmbeddingGemma, 256 dims; related texts
+/// score ~0.5–0.65, unrelated ~0.1 in `ln-bench embed`).
+const MIN_SIMILARITY: f32 = 0.45;
+
+fn relevant(h: &SearchHit, query: &str, query_from_model: bool) -> bool {
+    if let Some(sim) = h.similarity {
+        return sim >= if query_from_model { MIN_SIMILARITY } else { MIN_SIMILARITY + 0.05 };
+    }
+    // Full-text only: the model-made query is short and specific; a raw sentence needs at
+    // least two of its longer words in the hit.
+    if query_from_model {
+        return true;
+    }
+    let text = h.text.to_lowercase();
+    query.split_whitespace().filter(|w| w.chars().count() >= 5).filter(|w| text.contains(&w.to_lowercase())).count() >= 2
+}
+
 pub fn is_question(text: &str) -> bool {
     let t = text.trim();
     if t.ends_with('?') || t.ends_with('？') || t.ends_with('吗') || t.ends_with("吗。") || t.ends_with('呢') || t.starts_with('¿') {
@@ -100,10 +117,10 @@ pub fn is_question(text: &str) -> bool {
     let first = t.split_whitespace().next().unwrap_or("").to_lowercase();
     let first = first.trim_matches(|c: char| !c.is_alphanumeric() && c != '\'' && c != '-');
     const W: &[&str] = &[
-        "wer", "wie", "was", "wann", "wo", "warum", "wieso", "weshalb", "welche", "welcher", "welches", "kannst", "können", "könnten", "hast", "habt", "gibt",
-        "who", "what", "when", "where", "why", "how", "which", "can", "could", "do", "does", "did", "will", "would", "should",
-        "qui", "que", "quoi", "quand", "où", "pourquoi", "comment", "est-ce", "quel", "quelle",
-        "qué", "quién", "cuándo", "dónde", "cómo", "cuál",
+        "wer", "wie", "was", "wann", "wo", "warum", "wieso", "weshalb", "welche", "welcher", "welches", "kannst", "können", "könnten",
+        "hast", "habt", "gibt", "who", "what", "when", "where", "why", "how", "which", "can", "could", "do", "does", "did", "will",
+        "would", "should", "qui", "que", "quoi", "quand", "où", "pourquoi", "comment", "est-ce", "quel", "quelle", "qué", "quién",
+        "cuándo", "dónde", "cómo", "cuál",
     ];
     W.contains(&first)
 }
@@ -123,7 +140,11 @@ fn run(core: &Arc<Core>, t: Trigger, note_path: PathBuf, note_id: &str, state: &
     let role = core.assistant().ok();
     // Step 2: ask the model what to look up; without a model use the last section directly.
     let query = match &role {
-        Some(r) => match core.chat_once(r, prompts::suggestion_query(&t.recent), true, "suggestion", Some(note_id)).ok().and_then(|x| prompts::parse_suggestion_query(&x)) {
+        Some(r) => match core
+            .chat_once(r, prompts::suggestion_query(&t.recent), true, "suggestion", Some(note_id))
+            .ok()
+            .and_then(|x| prompts::parse_suggestion_query(&x))
+        {
             Some(q) if q.relevant && !q.query.trim().is_empty() => q.query,
             Some(_) => return,
             None => t.fallback_query.clone(),
@@ -133,9 +154,12 @@ fn run(core: &Arc<Core>, t: Trigger, note_path: PathBuf, note_id: &str, state: &
     if state.lock().suggester.similar_to_dismissed(&query) {
         return;
     }
-    // Step 3: local search, excluding the running note.
+    // Step 3: local search, excluding the running note. Weak matches are dropped: a card must
+    // be worth the interruption (SPEC §6.1 rule 1).
     let filter = SearchFilter { exclude_paths: vec![note_path], ..Default::default() };
-    let mut hits = core.search_files(&query, &filter, 3);
+    let from_model = role.is_some();
+    let mut hits: Vec<SearchHit> =
+        core.search_files(&query, &filter, 6).into_iter().filter(|h| relevant(h, &query, from_model)).take(3).collect();
     if role.as_ref().is_some_and(|r| r.cloud) {
         let local = core.local_only_sources();
         hits.retain(|h| !local.contains(&h.source_id));
@@ -179,12 +203,26 @@ mod tests {
     use ln_types::Lang;
 
     fn seg(ch: Channel, t: &str, end: u64) -> Segment {
-        Segment { channel: ch, start_ms: end.saturating_sub(2000), end_ms: end, lang: Lang::new("de"), text: t.into(), lang_confidence: 1.0 }
+        Segment {
+            channel: ch,
+            start_ms: end.saturating_sub(2000),
+            end_ms: end,
+            lang: Lang::new("de"),
+            text: t.into(),
+            lang_confidence: 1.0,
+        }
     }
 
     #[test]
     fn questions_in_five_languages() {
-        for q in ["Wann kommt das Angebot?", "Kannst du mir die Zahlen schicken", "What is the budget", "我们什么时候开会吗", "¿Cuándo llega?", "Pourquoi pas"] {
+        for q in [
+            "Wann kommt das Angebot?",
+            "Kannst du mir die Zahlen schicken",
+            "What is the budget",
+            "我们什么时候开会吗",
+            "¿Cuándo llega?",
+            "Pourquoi pas",
+        ] {
             assert!(is_question(q), "{q}");
         }
         assert!(!is_question("Das Budget steht."));

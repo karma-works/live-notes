@@ -32,8 +32,10 @@ async fn mock_server() -> MockServer {
         "tasks": [{"text": "Angebot schicken", "assignee": "Li", "due": "Freitag"}], "note_additions": ["Li schickt das Angebot bis Freitag"]});
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"model": "m", "choices": [{"message": {"content": summary.to_string()}}],
-            "usage": {"prompt_tokens": 1000, "completion_tokens": 100}})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"model": "m", "choices": [{"message": {"content": summary.to_string()}}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 100}})),
+        )
         .mount(&s)
         .await;
     s
@@ -54,7 +56,14 @@ fn core_with(uri: &str) -> (tempfile::TempDir, Arc<Core>, EventReceiver) {
                 p.base_url = uri.clone();
             }
         }
-        s.providers.push(Provider { id: "mock".into(), name: "Mock".into(), kind: ProviderKind::Custom, base_url: uri.clone(), headers: vec![], is_cloud: true });
+        s.providers.push(Provider {
+            id: "mock".into(),
+            name: "Mock".into(),
+            kind: ProviderKind::Custom,
+            base_url: uri.clone(),
+            headers: vec![],
+            is_cloud: true,
+        });
         s.transcription.mode = TranscriptionMode::OpenAiCheap;
         s.live_suggestions.enabled = false;
         // No embedding server in tests: full-text search only.
@@ -116,7 +125,11 @@ fn notes_search_and_ask() {
     let server = rt.block_on(async {
         let s = MockServer::start().await;
         let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Bis Ende Q1 [1].\"}}]}\n\ndata: [DONE]\n\n";
-        Mock::given(method("POST")).and(path("/chat/completions")).respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream")).mount(&s).await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&s)
+            .await;
         s
     });
     let (_dir, core, mut rx) = core_with(&server.uri());
@@ -173,5 +186,10 @@ fn missing_key_gives_guidance_and_first_run_plan() {
     core.update_settings(|s| s.transcription.mode = TranscriptionMode::OpenAiCheap);
     let err = core.start_recording(None).unwrap_err().to_string();
     assert!(err.contains("OpenAI"), "{err}");
+    // Cost limit: once reached, cloud roles pause.
+    core.costs.record_audio("openai", "gpt-transcribe", None, 60.0 * 60.0 * 30.0);
+    core.update_settings(|s| s.costs.monthly_limit_usd = 1.0);
+    assert!(core.cost_limit_reached());
+    assert!(matches!(core.assistant(), Err(crate::ai::Unavailable::CostLimit)));
     core.shutdown();
 }

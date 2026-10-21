@@ -13,9 +13,8 @@ pub struct TranscriptLine {
     pub text: String,
 }
 
-static LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\[(\d{1,3}):(\d{2}):(\d{2})\] (.+?) \(([a-z]{2,3}(?:-[a-z]{2,4})?)\): ?(.*)$").unwrap()
-});
+static LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\[(\d{1,3}):(\d{2}):(\d{2})\] (.+?) \(([a-z]{2,3}(?:-[a-z]{2,4})?)\): ?(.*)$").unwrap());
 
 impl TranscriptLine {
     pub fn parse(line: &str) -> Option<TranscriptLine> {
@@ -43,9 +42,8 @@ impl TranscriptLine {
 
     /// Resolves the channel of a line: either a channel label or a renamed speaker.
     pub fn channel(&self, speakers: &BTreeMap<String, String>) -> Option<Channel> {
-        Channel::from_label(&self.label).or_else(|| {
-            speakers.iter().find(|(_, name)| **name == self.label).and_then(|(id, _)| Channel::from_label(id))
-        })
+        Channel::from_label(&self.label)
+            .or_else(|| speakers.iter().find(|(_, name)| **name == self.label).and_then(|(id, _)| Channel::from_label(id)))
     }
 }
 
