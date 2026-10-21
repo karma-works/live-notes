@@ -77,7 +77,34 @@ Schwäche bei Chinesisch/Deutsch.
   „Grant All Permissions“, Download der Expert-Modelle.
 - „Delete all user data and models“.
 
-## 6. Was wir übernehmen, was nicht
+## 6. Datenspeicherung (installierte App, nur Dateinamen und Tabellenschema angesehen)
+
+Ort: `~/Library/Application Support/com.google.AIEdgeForesight/`
+
+| Datei | Größe | Inhalt |
+|---|---|---|
+| `database.sqlite` | 8,9 MB | Haupt-DB der App: `notes_table` (Notizen + „enhanced“ Fassung), `event_transcript_table` (Transkript als **ein Textfeld** pro Meeting + Zusammenfassung), `event_insight_table` (Live-Assistent-Antworten), Dokument-Embeddings mit 3D-Projektion (`proj_x/y/z` – für eine räumliche Wissenskarte), Graph-RAG-Tabellen (`nodes_table`, `edges_table`, Entitäten, Cluster, Labels) |
+| `helper_storage/rag_vector.db` | 2,6 MB (+ WAL) | Vektorspeicher `Memories(text, embedding BLOB_F32x768, ttl, document_id)` |
+| `helper_storage/agent_metadata.db` | 8,7 MB | `documents`-Tabelle (Chunks) und Einstellungen des Helpers |
+| `models/` | 4,2 GB | 5 Modelldateien (siehe unten) |
+| `model_cache/` | 2,6 GB | vorkompilierte GPU-Programme/Gewichte (LiteRT „mldrift“, XNNPACK) |
+
+Befunde:
+- **Notizen und Transkripte liegen ausschließlich in der internen SQLite-Datenbank**, nicht als Dateien.
+- **Rohaudio wird nicht gespeichert** (keine Audiodateien im Datenordner).
+- Daten werden mit Tink verschlüsselt, der Schlüssel liegt im macOS-Schlüsselbund
+  („Foresight Encryption Key Access“).
+- Modelldateien (anhand Größe und Cache-Namen zugeordnet):
+
+| Ordner | Größe | Vermutlich |
+|---|---|---|
+| `models/15` | 3,66 GB `.litertlm` | Gemma 4 E4B (Modelltyp-Enum 15 = E4B), mit MTP-Drafter |
+| `models/1` | 469 MB `.litertlm` | Multimodales Embedding-Modell (Text-, Bild- und Audio-Encoder) – EmbeddingGemma-Variante für die „omnimodale“ Suche |
+| `models/3` | 187 MB `.litertlm` | Spracherkennung (Streaming-Audio-Encoder, USM-basiert) |
+| `models/4` | 179 MB `.tflite` | unklar (Kandidaten: Fragenerkennung für den Live-Assistenten, VAD/Rauschunterdrückung) |
+| `models/2` | 4,7 MB `.model` | SentencePiece-Tokenizer |
+
+## 7. Was wir übernehmen, was nicht
 
 | Übernehmen | Weglassen |
 |---|---|
@@ -86,4 +113,6 @@ Schwäche bei Chinesisch/Deutsch.
 | Process Tap + Mic mit AEC, zwei Kanäle | Mehrseitiges Onboarding, „Grant All Permissions“-Seite |
 | Hybride Suche FTS5 + Vektor + RRF in SQLite | Flutter/Skia, separater 90-MB-Helper |
 | VAD-Segmentierung, OpenCC für Chinesisch | Englisch-only-ASR |
+| Kein Rohaudio auf der Festplatte | Notizen nur in interner DB (wir: Markdown-Dateien) |
+| Live-Assistent: Inhalte während des Gesprächs vorschlagen | Kalender-Pflicht für Meeting-Erkennung |
 | Notiz-Anreicherung, Action Items, Zustimmungs-Hinweis | Daily Briefings (kalenderbasiert) – ggf. später mit lokalem Kalender |

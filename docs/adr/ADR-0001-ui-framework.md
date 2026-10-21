@@ -101,7 +101,8 @@ Absicherung gegen das pre-1.0-Risiko:
 - Die UI ist eine dünne Schicht (`ln-app`). Die gesamte Logik liegt in UI-freien Crates mit eigener
   Fassade (`ln-core`). Ein Wechsel auf Iced bliebe so auf die UI-Crate begrenzt.
 - In Meilenstein 0 ein Spike: Transkript-Liste mit 10.000 Zeilen, chinesische Pinyin-Eingabe,
-  Markdown-Ansicht, Speicher/CPU messen. Fällt der Spike durch → Iced.
+  Markdown-Leseansicht (GFM-Tabellen, Aufgabenlisten, Code mit Hervorhebung) und Markdown-Editor
+  (10.000 Zeilen, IME, Undo), Speicher/CPU messen. Fällt der Spike durch → Iced.
 
 ## Konsequenzen
 
