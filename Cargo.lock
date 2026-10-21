@@ -4268,6 +4268,7 @@ dependencies = [
  "ln-types",
  "parking_lot",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

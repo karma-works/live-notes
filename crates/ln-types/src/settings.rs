@@ -85,6 +85,8 @@ pub enum ProviderKind {
     Ollama,
     LmStudio,
     Custom,
+    /// The user's ChatGPT Plus/Pro plan via Sign in with ChatGPT (Responses API, OAuth token).
+    ChatGpt,
 }
 
 /// An OpenAI-compatible endpoint (SPEC ADR-0002).
@@ -102,6 +104,16 @@ pub struct Provider {
 }
 
 impl Provider {
+    pub fn builtin() -> Vec<Provider> {
+        vec![
+            Provider::openrouter(),
+            Provider::openai(),
+            Provider::chatgpt(),
+            Provider::local_llama(),
+            Provider::ollama(),
+            Provider::lm_studio(),
+        ]
+    }
     pub fn openrouter() -> Self {
         Provider {
             id: "openrouter".into(),
@@ -120,6 +132,17 @@ impl Provider {
             id: "openai".into(),
             name: "OpenAI".into(),
             kind: ProviderKind::OpenAi,
+            base_url: "https://api.openai.com/v1".into(),
+            headers: vec![],
+            is_cloud: true,
+        }
+    }
+    /// Requests are billed to the user's ChatGPT plan, not per token.
+    pub fn chatgpt() -> Self {
+        Provider {
+            id: "chatgpt".into(),
+            name: "ChatGPT".into(),
+            kind: ProviderKind::ChatGpt,
             base_url: "https://api.openai.com/v1".into(),
             headers: vec![],
             is_cloud: true,
@@ -167,9 +190,50 @@ pub struct RoleConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Roles {
+    /// Questions with sources.
     pub assistant: RoleConfig,
+    /// Live suggestions during a recording: short prompts, should be fast. `None` = as `assistant`.
+    pub suggestions: Option<RoleConfig>,
+    /// Summary after a recording: runs once in the background. `None` = as `assistant`.
+    pub summary: Option<RoleConfig>,
     pub image: RoleConfig,
     pub embeddings: RoleConfig,
+}
+
+/// The chat roles the user can give separate models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChatRole {
+    Assistant,
+    Suggestions,
+    Summary,
+}
+
+impl ChatRole {
+    pub const ALL: [ChatRole; 3] = [ChatRole::Assistant, ChatRole::Suggestions, ChatRole::Summary];
+    pub fn id(self) -> &'static str {
+        match self {
+            ChatRole::Assistant => "assistant",
+            ChatRole::Suggestions => "suggestions",
+            ChatRole::Summary => "summary",
+        }
+    }
+}
+
+impl Roles {
+    pub fn get(&self, r: ChatRole) -> &RoleConfig {
+        match r {
+            ChatRole::Assistant => &self.assistant,
+            ChatRole::Suggestions => self.suggestions.as_ref().unwrap_or(&self.assistant),
+            ChatRole::Summary => self.summary.as_ref().unwrap_or(&self.assistant),
+        }
+    }
+    pub fn set(&mut self, r: ChatRole, c: RoleConfig) {
+        match r {
+            ChatRole::Assistant => self.assistant = c,
+            ChatRole::Suggestions => self.suggestions = Some(c),
+            ChatRole::Summary => self.summary = Some(c),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -263,7 +327,7 @@ impl Default for Settings {
             general: General::default(),
             languages: Languages::default(),
             transcription: Transcription::default(),
-            providers: vec![Provider::openrouter(), Provider::openai(), Provider::local_llama(), Provider::ollama(), Provider::lm_studio()],
+            providers: Provider::builtin(),
             roles: Roles::default(),
             live_suggestions: LiveSuggestions::default(),
             notes: NotesSettings::default(),
@@ -307,6 +371,10 @@ impl Default for Roles {
     fn default() -> Self {
         Roles {
             assistant: RoleConfig { provider: "openrouter".into(), model: "google/gemma-4-26b-a4b-it".into() },
+            // `None`: the assistant's model (Gemma 4 26B-A4B, 4B active parameters, fast enough for
+            // live prompts). Must stay `None` so older files take over their assistant (`migrated`).
+            suggestions: None,
+            summary: None,
             image: RoleConfig { provider: "local".into(), model: "gemma-4-e2b-it".into() },
             embeddings: RoleConfig { provider: "local".into(), model: "embeddinggemma-300m".into() },
         }
@@ -340,8 +408,8 @@ impl Default for Costs {
 impl Settings {
     pub fn load(path: &Path) -> crate::Result<Settings> {
         match std::fs::read_to_string(path) {
-            Ok(s) => toml::from_str(&s).map_err(|e| crate::Error::Settings(e.to_string())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+            Ok(s) => toml::from_str::<Settings>(&s).map(Settings::migrated).map_err(|e| crate::Error::Settings(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default().migrated()),
             Err(e) => Err(e.into()),
         }
     }
@@ -356,6 +424,23 @@ impl Settings {
         std::fs::write(&tmp, text)?;
         std::fs::rename(&tmp, path)?;
         Ok(())
+    }
+
+    /// Fills what older settings files lack: new built-in providers, and separate models for
+    /// suggestions and summary (taken over from the assistant, which served both before).
+    fn migrated(mut self) -> Settings {
+        for p in Provider::builtin() {
+            if self.provider(&p.id).is_none() {
+                self.providers.push(p);
+            }
+        }
+        if self.roles.suggestions.is_none() {
+            self.roles.suggestions = Some(self.roles.assistant.clone());
+        }
+        if self.roles.summary.is_none() {
+            self.roles.summary = Some(self.roles.assistant.clone());
+        }
+        self
     }
 
     pub fn notes_dir(&self, paths: &AppPaths) -> PathBuf {
@@ -384,7 +469,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("settings.toml");
         let mut s = Settings::load(&p).unwrap();
-        assert_eq!(s, Settings::default());
+        assert_eq!(s, Settings::default().migrated());
         assert_eq!(s.languages.mine.len(), 5);
         s.first_run_done = true;
         s.sources.push(SourceSetting {
@@ -407,5 +492,21 @@ mod tests {
         assert_eq!(s.transcription.mode, TranscriptionMode::OpenAiCheap);
         assert_eq!(s.transcription.openai_model, "gpt-transcribe");
         assert_eq!(s.roles.assistant.model, "google/gemma-4-26b-a4b-it");
+    }
+
+    #[test]
+    fn old_file_gets_separate_roles_and_chatgpt() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.toml");
+        let old = "[[providers]]\nid = \"local\"\nname = \"Lokal\"\nkind = \"local_llama\"\nbase_url = \"http://127.0.0.1:18432/v1\"\nis_cloud = false\n\n[roles.assistant]\nprovider = \"local\"\nmodel = \"gemma-4-e4b-it\"\n";
+        std::fs::write(&p, old).unwrap();
+        let s = Settings::load(&p).unwrap();
+        assert_eq!(s.roles.get(ChatRole::Summary).provider, "local");
+        assert_eq!(s.roles.get(ChatRole::Suggestions).model, "gemma-4-e4b-it");
+        assert_eq!(s.provider("chatgpt").map(|p| p.kind), Some(ProviderKind::ChatGpt));
+        let mut r = s.roles.clone();
+        r.set(ChatRole::Summary, RoleConfig { provider: "chatgpt".into(), model: "m".into() });
+        assert_eq!(r.get(ChatRole::Summary).provider, "chatgpt");
+        assert_eq!(r.get(ChatRole::Assistant).provider, "local");
     }
 }

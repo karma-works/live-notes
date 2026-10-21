@@ -137,7 +137,7 @@ pub fn spawn(core: &Arc<Core>, t: Trigger, note_path: PathBuf, note_id: String, 
 
 fn run(core: &Arc<Core>, t: Trigger, note_path: PathBuf, note_id: &str, state: &Arc<Mutex<State>>) {
     let cfg = core.settings().live_suggestions;
-    let role = core.assistant().ok();
+    let role = core.role(ln_types::ChatRole::Suggestions).ok();
     // Step 2: ask the model what to look up; without a model use the last section directly.
     let query = match &role {
         Some(r) => match core

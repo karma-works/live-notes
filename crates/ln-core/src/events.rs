@@ -50,6 +50,11 @@ pub enum CoreEvent {
         provider: String,
         result: Result<(), String>,
     },
+    /// ChatGPT sign-in state changed. `first_sign_in`: the plan is used for the first time on
+    /// this account, show the one-time confirmation.
+    ChatGptChanged {
+        first_sign_in: bool,
+    },
     /// Short user-facing message (already localised).
     Notice(String),
 }

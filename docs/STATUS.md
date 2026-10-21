@@ -19,10 +19,10 @@ von Zusammenfassung und Live-Antworten mit echtem Gemma (kein Schlüssel vorhand
 
 | Prüfung | Ergebnis |
 |---|---|
-| `scripts/verify.sh quick` | 58 Tests grün, Clippy und fmt sauber, `cargo deny` ok |
-| `scripts/verify.sh tour` | 8 Prüfungen der echten App grün (Erststart, Menübefehle, Kürzel, Checkliste, Suche, Aufnahme aus Dateien in 5 Sprachen, Transkript in der Notiz) |
+| `scripts/verify.sh quick` | 65 Tests grün, Clippy und fmt sauber, `cargo deny` ok |
+| `scripts/verify.sh tour` | 10 Prüfungen der echten App grün (Erststart, Menübefehle, Kürzel, Checkliste inkl. ChatGPT-Anmeldung, getrennte Rollen, Suche, Aufnahme aus Dateien in 5 Sprachen, Transkript in der Notiz) |
 | `scripts/verify.sh real` | zusätzlich echte Aufnahme: startet per ⌥⌘R-Aktion, System-Audio wird transkribiert, Mikrofon liefert durchgehend Ton |
-| `cargo test --workspace` | 58 Tests grün |
+| `cargo test --workspace` | 65 Tests grün |
 | `cargo clippy --workspace --all-targets -- -D warnings` | keine Befunde (auch mit `--features screenshots`) |
 | `cargo fmt --check` | sauber |
 | `cargo deny check` | Lizenzen, Sicherheitsmeldungen, Netzwerkregel (§11) ok |
@@ -45,6 +45,8 @@ von Zusammenfassung und Live-Antworten mit echtem Gemma (kein Schlüssel vorhand
 | F5 | Hybride Suche (FTS5 + Trigram für CJK + sqlite-vec int8 + RRF), schwache Bedeutungstreffer gefiltert | umgesetzt | Tests + echte Embeddings |
 | F6 | Fragen mit nummerierten Quellen, Streaming, Folgefragen, „laufendes Gespräch“ | umgesetzt | Test gegen Nachbau-Server |
 | F7 | Einstellungen (alle Abschnitte), Schlüssel im Schlüsselbund, Verbindung testen | umgesetzt | Screenshot; Schlüsselbund-Zugriff nur kompiliert |
+| F7 | Eigenes Modell je Rolle: Fragen, Live-Vorschläge, Zusammenfassung (ältere Einstellungen übernehmen das bisherige Modell) | umgesetzt | Tests, Tour `roles_are_separate` |
+| F7 | ChatGPT-Abo per „Sign in with ChatGPT“ (Plan-Nutzung, Responses API) für die Zusammenfassung oder jede andere Rolle | umgesetzt | Anmeldung, Signaturprüfung, Token-Erneuerung, Responses-Stream und Limitfehler gegen Nachbau-Server; Anmelde-URL von OpenAI angenommen („Use ChatGPT to sign in to Live Notes“). **Echte Anmeldung und echte Zusammenfassung über das Abo durch den Nutzer offen** |
 | F7 | Monatslimit für Kosten: bei Erreichen pausieren Cloud-Anfragen mit Hinweis, wo man es anhebt (statt Rückfrage-Dialog) | umgesetzt | Test |
 | F8 | Live-Vorschläge (Auslöser, Anfrage per Modell bzw. Rückfall, Suche, Kurzantwort, Anheften, Verwerfen) | umgesetzt | Tour (ohne Modell-Schlüssel, also Rückfallweg) |
 | F9 | Menüleisten-Symbol, globales Kürzel ⌥⌘R | umgesetzt | App startet stabil; Klicks nicht automatisiert getestet |

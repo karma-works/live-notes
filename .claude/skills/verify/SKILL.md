@@ -62,6 +62,18 @@ All found with `probe`/`real` on a MacBook Air M1 with a Bluetooth headset:
   before updating the window, and the main view must get the focus back after the first-run
   screen.
 
+## ChatGPT plan (Sign in with ChatGPT)
+
+- Never complete the sign-in yourself: choosing the account and allowing plan usage is the user's
+  decision. You may open the authorize URL to check that OpenAI accepts it (page "Use ChatGPT to
+  sign in to Live Notes"), then close the tab. `curl` gets a Cloudflare challenge; don't work around it.
+- Everything else is covered offline: `ln-ai` tests run the whole flow against a mock server
+  (callback, code exchange, RS256 ID token, refresh, Responses stream, `subscription_sharing_*`
+  errors); `ln-core` tests a summary on the plan with token refresh; the tour checks separate roles
+  and the "Sign in with ChatGPT" setup step (`07b-settings-chatgpt.png`, `07c-setup-chatgpt.png`).
+- In the user's app: tokens in the keychain (`works.karma.livenotes` / `chatgpt`), host ID in
+  `chatgpt-host.json` in the data folder; the log shows `chatgpt:` lines (never tokens or URLs).
+
 ## Permissions
 
 `probe` and `real` open the app bundle with `open`, so the **app's** permissions apply

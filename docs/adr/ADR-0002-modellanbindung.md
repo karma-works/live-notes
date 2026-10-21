@@ -50,7 +50,9 @@ betreibt, kann ihn einfach als Endpunkt eintragen.
 |---|---|---|
 | Transkription (live) | **lokal**: Whisper large-v3-turbo (whisper.cpp) | Cloud: OpenAI `gpt-live-transcribe` (Realtime-API) |
 | Transkription (Datei/Nachbearbeitung) | **lokal**: Whisper | Cloud: OpenAI `gpt-transcribe`, OpenRouter `/audio/transcriptions`, Gemini Flash-Lite (Audio) |
-| Assistent (Zusammenfassung, Fragen, Notiz-Anreicherung) | **OpenRouter**: `google/gemma-4-26b-a4b-it` | `gemma-4-31b-it`, jedes andere OpenRouter-Modell; lokal Gemma 4 E2B/E4B |
+| Fragen mit Quellen | **OpenRouter**: `google/gemma-4-26b-a4b-it` | `gemma-4-31b-it`, jedes andere OpenRouter-Modell; lokal Gemma 4 E2B/E4B; ChatGPT-Abo |
+| Live-Vorschläge (kurze Anfragen während des Gesprächs) | wie „Fragen“ (Gemma 4 26B-A4B: 4B aktive Parameter, schnell) | jedes schnelle Modell; ChatGPT-Abo |
+| Zusammenfassung (einmal nach der Aufnahme, asynchron) | wie „Fragen“; nach „Mit ChatGPT fortfahren“ **ChatGPT-Abo** | jedes Modell |
 | Bildverständnis (Bilder/Screenshots beim Indexieren) | **lokal**: Gemma 4 E2B/E4B (llama-server) | Cloud: `google/gemma-4-26b-a4b-it` oder jedes Modell mit Bildeingabe |
 | Embeddings | **lokal**: EmbeddingGemma 300M | Cloud: `qwen/qwen3-embedding-4b`, `baai/bge-m3` |
 
@@ -74,6 +76,21 @@ betreibt, kann ihn einfach als Endpunkt eintragen.
 6. **Bildverständnis standardmäßig lokal** (Gemma 4 E2B/E4B), weil Bilder oft private Inhalte
    (Screenshots, Dokumente) zeigen. Läuft gesammelt im Leerlauf, nie parallel zu einer Aufnahme auf
    Geräten mit wenig RAM.
+
+7. **ChatGPT-Abo statt Abrechnung pro Token (2026-10-21).** Über „Sign in with ChatGPT“ mit
+   Plan-Nutzung (developers.openai.com/siwc, Vorschau seit DevDay 2026-09-29) laufen Anfragen auf das
+   Plus/Pro-Abo des Nutzers. Für Open-Source-Apps, die lokal laufen, ist das ohne Partnervertrag
+   erlaubt: dynamische Client-Registrierung (`client_id=dynamic_agent_client`, `agent_name_hint`,
+   stabile `ext_agent_host_id`), OIDC mit PKCE und Rücksprung auf `127.0.0.1:1455/auth/callback`,
+   kein Client-Secret. Die App prüft die Signatur des ID-Tokens gegen das JWKS von OpenAI (ring),
+   speichert Tokens im Schlüsselbund und erneuert sie vor Ablauf (Refresh-Token rotiert, Zugriffe
+   serialisiert). Abmelden widerruft die Sitzung, die Registrierung bleibt für die nächste Anmeldung.
+   Anfragen gehen an `POST /v1/responses` mit `store: false`, `stream: true`, Systemtext als
+   `instructions` und ohne die dort abgelehnten Felder (`temperature`, `max_output_tokens`, …).
+   **Nicht abgedeckt:** Audio, Transkription und Embeddings – darum bleibt die Transkription lokal.
+   Limits: Wochenlimit pro App in den ChatGPT-Einstellungen; bei Plus teilen sich alle Apps das
+   5-Stunden-Limit. Fehlercodes (`subscription_sharing_*`) erscheinen als verständlicher Hinweis mit
+   Verweis auf chatgpt.com/settings/usage. Das Monatslimit für Cloud-Kosten gilt für das Abo nicht.
 
 ## Konsequenzen
 

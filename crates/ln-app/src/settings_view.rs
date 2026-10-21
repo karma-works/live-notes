@@ -10,8 +10,9 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex, scroll::ScrollableElement as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use ln_core::ChatGptStatus;
 use ln_core::Core;
-use ln_types::{ChineseScript, Lang, SuggestionFrequency, TranscriptionMode, UiLanguage};
+use ln_types::{ChatRole, ChineseScript, Lang, RoleConfig, SuggestionFrequency, TranscriptionMode, UiLanguage};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -19,7 +20,9 @@ pub struct SettingsView {
     core: Arc<Core>,
     openai_key: Entity<InputState>,
     openrouter_key: Entity<InputState>,
-    assistant_model: Entity<InputState>,
+    role_models: Vec<(ChatRole, Entity<InputState>)>,
+    /// One-time confirmation after the first sign-in with plan usage.
+    plan_notice: bool,
     limit: Entity<InputState>,
     tested: HashMap<String, Result<(), String>>,
     probe: Option<ln_core::ProbeReport>,
@@ -33,9 +36,196 @@ impl SettingsView {
         let s = core.settings();
         let openai_key = cx.new(|cx| InputState::new(window, cx).placeholder("sk-…").masked(true));
         let openrouter_key = cx.new(|cx| InputState::new(window, cx).placeholder("sk-or-…").masked(true));
-        let assistant_model = cx.new(|cx| InputState::new(window, cx).default_value(s.roles.assistant.model.clone()));
+        let role_models = ChatRole::ALL
+            .iter()
+            .map(|r| (*r, cx.new(|cx| InputState::new(window, cx).default_value(s.roles.get(*r).model.clone()))))
+            .collect();
         let limit = cx.new(|cx| InputState::new(window, cx).default_value(format!("{:.2}", s.costs.monthly_limit_usd)));
-        SettingsView { core, openai_key, openrouter_key, assistant_model, limit, tested: HashMap::new(), probe: None, probing: false }
+        core.chatgpt_load_models();
+        SettingsView {
+            core,
+            openai_key,
+            openrouter_key,
+            role_models,
+            plan_notice: false,
+            limit,
+            tested: HashMap::new(),
+            probe: None,
+            probing: false,
+        }
+    }
+
+    pub fn chatgpt_changed(&mut self, first_sign_in: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if first_sign_in {
+            self.plan_notice = true;
+        }
+        // The summary may have switched to ChatGPT: show its model.
+        let s = self.core.settings();
+        for (r, input) in &self.role_models {
+            let m = s.roles.get(*r).model.clone();
+            input.update(cx, |i, cx| i.set_value(m, window, cx));
+        }
+        cx.notify();
+    }
+
+    fn render_chatgpt(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let mut sec = Self::section(t("chatgpt-section"), cx);
+        if self.plan_notice {
+            sec = sec.child(
+                v_flex()
+                    .gap_2()
+                    .p_3()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(theme.border)
+                    .child(div().text_sm().font_semibold().child(t("chatgpt-first-title")))
+                    .child(div().text_xs().text_color(theme.muted_foreground).child(t("chatgpt-first-body")))
+                    .child(h_flex().child(Button::new("plan-ok").small().primary().label(t("got-it")).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.plan_notice = false;
+                            cx.notify();
+                        },
+                    )))),
+            );
+        }
+        let manage = |id: &'static str| {
+            Button::new(id).small().ghost().label(t("chatgpt-manage")).on_click(|_, _, cx| cx.open_url(ln_core::CHATGPT_USAGE_URL))
+        };
+        match self.core.chatgpt_status() {
+            ChatGptStatus::SignedOut => {
+                sec.child(div().text_xs().text_color(theme.muted_foreground).child(t("chatgpt-hint"))).child(h_flex().child(
+                    Button::new("chatgpt-in").small().primary().label(t("chatgpt-continue")).on_click(cx.listener(|this, _, _, cx| {
+                        this.core.chatgpt_sign_in(false);
+                        cx.notify();
+                    })),
+                ))
+            }
+            ChatGptStatus::SigningIn => sec.child(
+                h_flex().gap_2().child(div().flex_1().text_xs().text_color(theme.muted_foreground).child(t("chatgpt-waiting"))).child(
+                    Button::new("chatgpt-cancel").small().ghost().label(t("cancel")).on_click(cx.listener(|this, _, _, cx| {
+                        this.core.chatgpt_cancel_sign_in();
+                        cx.notify();
+                    })),
+                ),
+            ),
+            ChatGptStatus::SignedIn { email, plan_usage } => {
+                let who = format!("{} {}", t("chatgpt-signed-in"), email.unwrap_or_default());
+                let mut row = h_flex().gap_2().child(div().flex_1().text_sm().child(who));
+                if plan_usage {
+                    row = row.child(manage("chatgpt-manage"));
+                }
+                row = row.child(Button::new("chatgpt-out").small().ghost().label(t("chatgpt-sign-out")).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.core.chatgpt_sign_out();
+                        cx.notify();
+                    },
+                )));
+                sec = sec.child(row);
+                if !plan_usage {
+                    sec = sec.child(div().text_xs().text_color(theme.warning).child(t("chatgpt-plan-off"))).child(h_flex().child(
+                        Button::new("chatgpt-allow").small().primary().label(t("chatgpt-allow")).on_click(cx.listener(|this, _, _, cx| {
+                            this.core.chatgpt_sign_in(true);
+                            cx.notify();
+                        })),
+                    ));
+                }
+                sec
+            }
+        }
+    }
+
+    /// Provider and model for one chat role.
+    fn role_row(&self, role: ChatRole, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let s = self.core.settings();
+        let current = s.roles.get(role).clone();
+        let chatgpt_ok = matches!(self.core.chatgpt_status(), ChatGptStatus::SignedIn { plan_usage: true, .. });
+        let mut providers: Vec<(&'static str, &'static str)> =
+            vec![("openrouter", "OpenRouter"), ("local", t("mode-local")), ("ollama", "Ollama")];
+        if chatgpt_ok || current.provider == "chatgpt" {
+            providers.push(("chatgpt", "ChatGPT"));
+        }
+        let idx = providers.iter().position(|(id, _)| *id == current.provider);
+        let ids: Vec<&'static str> = providers.iter().map(|(id, _)| *id).collect();
+        let (label, hint) = match role {
+            ChatRole::Assistant => (t("role-assistant"), None),
+            ChatRole::Suggestions => (t("role-suggestions"), Some(t("role-suggestions-hint"))),
+            ChatRole::Summary => (t("role-summary"), Some(t("role-summary-hint"))),
+        };
+        let input = self.role_models.iter().find(|(r, _)| *r == role).map(|(_, i)| i.clone()).expect("input per role");
+        let mut col = v_flex()
+            .gap_1()
+            .child(div().text_sm().child(label))
+            .when_some(hint, |el, h| el.child(div().text_xs().text_color(theme.muted_foreground).child(h)))
+            .child(
+                RadioGroup::horizontal(SharedString::from(format!("prov-{}", role.id())))
+                    .children(providers.iter().map(|(_, name)| *name))
+                    .selected_index(idx)
+                    .on_change(cx.listener(move |this, i: &usize, window, cx| {
+                        let Some(p) = ids.get(*i).copied() else { return };
+                        let m = match p {
+                            "openrouter" => "google/gemma-4-26b-a4b-it".to_string(),
+                            "local" => ln_models::recommended_llm(Core::ram_gb()).id.to_string(),
+                            "chatgpt" => this.core.chatgpt_models().first().map(|m| m.id.clone()).unwrap_or_default(),
+                            _ => "gemma4".to_string(),
+                        };
+                        this.core.update_settings(|s| s.roles.set(role, RoleConfig { provider: p.into(), model: m.clone() }));
+                        if let Some((_, inp)) = this.role_models.iter().find(|(r, _)| *r == role) {
+                            inp.update(cx, |st, cx| st.set_value(m, window, cx));
+                        }
+                        if p == "local" {
+                            this.core.download_models(&[ln_models::recommended_llm(Core::ram_gb()).id]);
+                        }
+                        cx.notify();
+                    })),
+            );
+        let plan_models = if current.provider == "chatgpt" { self.core.chatgpt_models() } else { vec![] };
+        if !plan_models.is_empty() {
+            let sel = plan_models.iter().position(|m| m.id == current.model);
+            let slugs: Vec<String> = plan_models.iter().map(|m| m.id.clone()).collect();
+            col = col.child(
+                RadioGroup::vertical(SharedString::from(format!("model-{}", role.id())))
+                    .children(plan_models.iter().map(|m| m.name.clone()))
+                    .selected_index(sel)
+                    .on_change(cx.listener(move |this, i: &usize, _, cx| {
+                        if let Some(m) = slugs.get(*i).cloned() {
+                            this.core.update_settings(|s| s.roles.set(role, RoleConfig { provider: "chatgpt".into(), model: m }));
+                        }
+                        cx.notify();
+                    })),
+            );
+        } else {
+            let input2 = input.clone();
+            col = col.child(
+                h_flex()
+                    .gap_2()
+                    .child(div().text_xs().text_color(theme.muted_foreground).child(t("model")))
+                    .child(div().flex_1().child(Input::new(&input)))
+                    .child(Button::new(SharedString::from(format!("save-model-{}", role.id()))).small().label(t("save-key")).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            let m = input2.read(cx).value().trim().to_string();
+                            if !m.is_empty() {
+                                let p = this.core.settings().roles.get(role).provider.clone();
+                                this.core.update_settings(|s| s.roles.set(role, RoleConfig { provider: p, model: m }));
+                            }
+                            cx.notify();
+                        }),
+                    )),
+            );
+        }
+        if current.provider == "chatgpt" && chatgpt_ok {
+            col = col.child(
+                h_flex().gap_2().child(div().text_xs().text_color(theme.muted_foreground).child(t("chatgpt-using"))).child(
+                    Button::new(SharedString::from(format!("manage-{}", role.id())))
+                        .xsmall()
+                        .ghost()
+                        .label(t("chatgpt-manage"))
+                        .on_click(|_, _, cx| cx.open_url(ln_core::CHATGPT_USAGE_URL)),
+                ),
+            );
+        }
+        col
     }
 
     fn run_probe(&mut self, cx: &mut Context<Self>) {
@@ -279,44 +469,14 @@ impl Render for SettingsView {
                 ),
             );
 
-        // Assistant
-        let prov_idx = match s.roles.assistant.provider.as_str() {
-            "openrouter" => 0,
-            "local" => 1,
-            _ => 2,
-        };
-        let model_input = self.assistant_model.clone();
-        let assistant = Self::section(t("assistant"), cx)
-            .child(
-                RadioGroup::horizontal("prov")
-                    .children(["OpenRouter", t("mode-local"), "Ollama"])
-                    .selected_index(Some(prov_idx))
-                    .on_change(cx.listener(|this, i: &usize, window, cx| {
-                        let (p, m) = match i {
-                            0 => ("openrouter", "google/gemma-4-26b-a4b-it".to_string()),
-                            1 => ("local", ln_models::recommended_llm(Core::ram_gb()).id.to_string()),
-                            _ => ("ollama", "gemma4".to_string()),
-                        };
-                        this.core.update_settings(|s| s.roles.assistant = ln_types::RoleConfig { provider: p.into(), model: m.clone() });
-                        this.assistant_model.update(cx, |st, cx| st.set_value(m, window, cx));
-                        if p == "local" {
-                            this.core.download_models(&[ln_models::recommended_llm(Core::ram_gb()).id]);
-                        }
-                        cx.notify();
-                    })),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(div().text_xs().text_color(theme.muted_foreground).child(t("model")))
-                    .child(div().flex_1().child(Input::new(&self.assistant_model)))
-                    .child(Button::new("save-model").small().label(t("save-key")).on_click(cx.listener(move |this, _, _, cx| {
-                        let m = model_input.read(cx).value().to_string();
-                        this.core.update_settings(|s| s.roles.assistant.model = m);
-                        cx.notify();
-                    }))),
-            )
-            .when(prov_idx == 0, |el| el.child(self.key_row("openrouter", t("openrouter-key"), &self.openrouter_key.clone(), cx)))
+        // Assistant: one model per role (questions, live suggestions, summary).
+        let uses_openrouter = ChatRole::ALL.iter().any(|r| s.roles.get(*r).provider == "openrouter");
+        let mut assistant = Self::section(t("assistant"), cx);
+        for role in ChatRole::ALL {
+            assistant = assistant.child(self.role_row(role, cx));
+        }
+        let assistant = assistant
+            .when(uses_openrouter, |el| el.child(self.key_row("openrouter", t("openrouter-key"), &self.openrouter_key.clone(), cx)))
             .child(Switch::new("auto-summary").label(t("auto-summary")).checked(s.notes.auto_summary).on_change(cx.listener(
                 |this, v: &bool, _, cx| {
                     let v = *v;
@@ -455,6 +615,7 @@ impl Render for SettingsView {
                 .child(self.render_probe(cx))
                 .child(transcription)
                 .child(languages)
+                .child(self.render_chatgpt(cx))
                 .child(assistant)
                 .child(live)
                 .child(privacy)

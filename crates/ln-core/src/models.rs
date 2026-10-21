@@ -220,6 +220,9 @@ impl Core {
                     s.roles.assistant = ln_types::RoleConfig { provider: "custom".into(), model: model.clone() };
                 }
             }
+            // Suggestions and summary start with the same model; settings can split them later.
+            s.roles.suggestions = Some(s.roles.assistant.clone());
+            s.roles.summary = Some(s.roles.assistant.clone());
         });
         let ids: Vec<&'static str> = self.first_run_plan(local).iter().map(|m| m.id).collect();
         self.download_models(&ids);
@@ -315,7 +318,7 @@ impl Core {
         if !s.first_run_done {
             return;
         }
-        let local = s.roles.assistant.provider == "local";
+        let local = ln_types::ChatRole::ALL.iter().any(|r| s.roles.get(*r).provider == "local");
         let ids: Vec<&'static str> = self.first_run_plan(local).iter().map(|m| m.id).collect();
         self.download_models(&ids);
     }

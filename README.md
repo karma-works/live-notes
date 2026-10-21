@@ -21,6 +21,8 @@ cargo run --release -p ln-app
 
 Beim ersten Start lädt die App ~1 GB Modelle. Ohne OpenRouter-Schlüssel funktionieren Aufnahme,
 Transkription und Suche; Zusammenfassungen und Antworten brauchen einen Schlüssel oder ein lokales Modell.
+Fragen, Live-Vorschläge und Zusammenfassung haben je ein eigenes Modell. Mit „Mit ChatGPT fortfahren“
+in den Einstellungen läuft die Zusammenfassung über ein ChatGPT-Plus- oder Pro-Abo statt pro Token.
 
 App-Bundle bauen: `scripts/bundle-macos.sh` → `dist/Live Notes.app`.
 

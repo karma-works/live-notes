@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 pub fn summarize(core: &Arc<Core>, path: &Path) {
     let ui = core.ui_language();
-    let role = match core.assistant() {
+    let role = match core.role(ln_types::ChatRole::Summary) {
         Ok(r) => r,
         Err(u) => {
             core.emit(CoreEvent::Notice(format!("{} {}", tr(ui, "Keine Zusammenfassung:", "No summary:"), core.unavailable_text(&u))));

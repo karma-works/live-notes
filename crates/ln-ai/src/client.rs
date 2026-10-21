@@ -30,7 +30,7 @@ impl Client {
     }
 
     fn needs_key(&self) -> bool {
-        matches!(self.provider.kind, ProviderKind::OpenRouter | ProviderKind::OpenAi)
+        matches!(self.provider.kind, ProviderKind::OpenRouter | ProviderKind::OpenAi | ProviderKind::ChatGpt)
     }
 
     fn url(&self, path: &str) -> String {
@@ -75,6 +75,9 @@ impl Client {
     }
 
     pub async fn chat(&self, r: &ChatRequest) -> Result<ChatResponse> {
+        if self.provider.kind == ProviderKind::ChatGpt {
+            return self.responses_stream(r, |_| true).await;
+        }
         let resp = self.req(reqwest::Method::POST, "chat/completions")?.json(&self.chat_body(r, false)).send().await?;
         let v = check(resp).await?;
         let text = v["choices"][0]["message"]["content"].as_str().unwrap_or_default().to_string();
@@ -85,6 +88,9 @@ impl Client {
     /// Streams the answer; `on_delta` gets each text piece and may return `false` to cancel.
     pub async fn chat_stream(&self, r: &ChatRequest, mut on_delta: impl FnMut(&str) -> bool) -> Result<ChatResponse> {
         use eventsource_stream::Eventsource;
+        if self.provider.kind == ProviderKind::ChatGpt {
+            return self.responses_stream(r, on_delta).await;
+        }
         let resp = self.req(reqwest::Method::POST, "chat/completions")?.json(&self.chat_body(r, true)).send().await?;
         if !resp.status().is_success() {
             check(resp).await?;
@@ -112,6 +118,98 @@ impl Client {
             }
         }
         Ok(ChatResponse { text, usage, model: r.model.clone() })
+    }
+
+    /// Responses API body for ChatGPT plan usage: `store: false`, `stream: true`, system
+    /// messages as `instructions`, and none of the fields the plan route rejects
+    /// (temperature, max_output_tokens, ...).
+    fn responses_body(r: &ChatRequest) -> Value {
+        use crate::{Content, ContentPart, Role};
+        let mut instructions = Vec::new();
+        let mut input = Vec::new();
+        for m in &r.messages {
+            let text_type = if m.role == Role::Assistant { "output_text" } else { "input_text" };
+            let content = match &m.content {
+                Content::Text(t) => json!([{ "type": text_type, "text": t }]),
+                Content::Parts(parts) => Value::Array(
+                    parts
+                        .iter()
+                        .map(|p| match p {
+                            ContentPart::Text { text } => json!({ "type": text_type, "text": text }),
+                            ContentPart::ImageUrl { image_url } => json!({ "type": "input_image", "image_url": image_url.url }),
+                        })
+                        .collect(),
+                ),
+            };
+            match m.role {
+                Role::System => {
+                    if let Content::Text(t) = &m.content {
+                        instructions.push(t.clone());
+                    }
+                }
+                Role::User => input.push(json!({ "role": "user", "content": content })),
+                Role::Assistant => input.push(json!({ "role": "assistant", "content": content })),
+            }
+        }
+        let mut body = json!({ "model": r.model, "input": input, "store": false, "stream": true });
+        if !instructions.is_empty() {
+            body["instructions"] = json!(instructions.join("\n\n"));
+        }
+        body
+    }
+
+    async fn responses_stream(&self, r: &ChatRequest, mut on_delta: impl FnMut(&str) -> bool) -> Result<ChatResponse> {
+        use eventsource_stream::Eventsource;
+        let resp = self.req(reqwest::Method::POST, "responses")?.json(&Self::responses_body(r)).send().await?;
+        if !resp.status().is_success() {
+            check(resp).await?;
+            unreachable!()
+        }
+        let mut stream = resp.bytes_stream().eventsource();
+        let mut text = String::new();
+        while let Some(ev) = stream.next().await {
+            let ev = ev.map_err(|e| Error::Decode(e.to_string()))?;
+            let Ok(v) = serde_json::from_str::<Value>(&ev.data) else { continue };
+            let kind = v["type"].as_str().unwrap_or(ev.event.as_str());
+            match kind {
+                "response.output_text.delta" => {
+                    if let Some(d) = v["delta"].as_str()
+                        && !d.is_empty()
+                    {
+                        text.push_str(d);
+                        if !on_delta(d) {
+                            return Err(Error::Cancelled);
+                        }
+                    }
+                }
+                "response.completed" => {
+                    let u = &v["response"]["usage"];
+                    let usage = Usage {
+                        prompt_tokens: u["input_tokens"].as_u64().unwrap_or(0),
+                        completion_tokens: u["output_tokens"].as_u64().unwrap_or(0),
+                        // Billed to the ChatGPT plan, not per token.
+                        cost: Some(0.0),
+                    };
+                    let model = v["response"]["model"].as_str().unwrap_or(&r.model).to_string();
+                    return Ok(ChatResponse { text, usage, model });
+                }
+                "response.failed" | "error" => {
+                    let e = if v["response"]["error"].is_object() { &v["response"]["error"] } else { &v["error"] };
+                    let e = if e.is_object() { e } else { &v };
+                    return Err(Error::Plan {
+                        status: 400,
+                        code: e["code"].as_str().unwrap_or("response_failed").to_string(),
+                        message: e["message"].as_str().unwrap_or_default().to_string(),
+                    });
+                }
+                "response.incomplete" => {
+                    let reason = v["response"]["incomplete_details"]["reason"].as_str().unwrap_or("unknown");
+                    return Err(Error::Decode(format!("response incomplete: {reason}")));
+                }
+                _ => {}
+            }
+        }
+        Err(Error::Decode("stream ended without response.completed".into()))
     }
 
     pub async fn embeddings(&self, model: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>> {
@@ -173,6 +271,24 @@ impl Client {
             b = b.bearer_auth(k);
         }
         let v = check(b.send().await?).await?;
+        if let Some(models) = v["models"].as_array() {
+            // ChatGPT plan catalog: `slug`, `display_name`, only `visibility: "list"` is for display.
+            return Ok(models
+                .iter()
+                .filter(|m| m["visibility"].as_str().is_none_or(|x| x == "list"))
+                .filter_map(|m| {
+                    let id = m["slug"].as_str()?.to_string();
+                    Some(ModelInfo {
+                        name: m["display_name"].as_str().unwrap_or(&id).to_string(),
+                        id,
+                        input_modalities: vec!["text".into(), "image".into()],
+                        context_length: None,
+                        price_in: Some(0.0),
+                        price_out: Some(0.0),
+                    })
+                })
+                .collect());
+        }
         let list = v["data"].as_array().cloned().unwrap_or_default();
         Ok(list
             .iter()
@@ -207,10 +323,14 @@ async fn check(resp: reqwest::Response) -> Result<Value> {
     let status = resp.status();
     let body = resp.text().await?;
     if !status.is_success() {
-        let message = serde_json::from_str::<Value>(&body)
-            .ok()
-            .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-            .unwrap_or_else(|| body.chars().take(200).collect());
+        let v = serde_json::from_str::<Value>(&body).unwrap_or(Value::Null);
+        let message =
+            v["error"]["message"].as_str().or(v["detail"].as_str()).map(str::to_string).unwrap_or_else(|| body.chars().take(200).collect());
+        if let Some(code) = v["error"]["code"].as_str()
+            && (code.starts_with("subscription_sharing") || code.starts_with("chatpass"))
+        {
+            return Err(Error::Plan { status: status.as_u16(), code: code.into(), message });
+        }
         return Err(Error::Api { status: status.as_u16(), message });
     }
     serde_json::from_str(&body).map_err(|e| Error::Decode(e.to_string()))
@@ -279,6 +399,74 @@ mod tests {
 
         let c2 = Client::new(provider(&s.uri(), ProviderKind::OpenAi), None);
         assert!(matches!(c2.chat(&ChatRequest::new("m", vec![])).await, Err(Error::MissingKey(_))));
+    }
+
+    #[tokio::test]
+    async fn chatgpt_plan_uses_responses_api() {
+        let s = MockServer::start().await;
+        let sse = concat!(
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hal\"}\n\n",
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-x\",\"usage\":{\"input_tokens\":7,\"output_tokens\":2}}}\n\n",
+        );
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(header("authorization", "Bearer at"))
+            .and(body_partial_json(json!({"model": "gpt-x", "store": false, "stream": true, "instructions": "Be brief.",
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+                {"slug": "gpt-x", "display_name": "GPT X", "visibility": "list"},
+                {"slug": "hidden", "display_name": "H", "visibility": "hide"}]})))
+            .mount(&s)
+            .await;
+        let c = Client::new(provider(&s.uri(), ProviderKind::ChatGpt), Some("at".into()));
+        let mut req = ChatRequest::new("gpt-x", vec![Message::system("Be brief."), Message::user("Hi")]);
+        req.json = true;
+        let r = c.chat(&req).await.unwrap();
+        assert_eq!(r.text, "Hallo");
+        assert_eq!(r.usage.prompt_tokens, 7);
+        assert_eq!(r.usage.cost, Some(0.0));
+        let body = Client::responses_body(&req);
+        for f in ["temperature", "max_output_tokens", "response_format", "text"] {
+            assert!(body.get(f).is_none(), "{f} must not be sent on the plan route");
+        }
+        let m = c.models().await.unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].name, "GPT X");
+        assert!(matches!(Client::new(provider(&s.uri(), ProviderKind::ChatGpt), None).chat(&req).await, Err(Error::MissingKey(_))));
+    }
+
+    #[tokio::test]
+    async fn chatgpt_limit_errors_keep_their_code() {
+        let s = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .set_body_json(json!({"error": {"code": "subscription_sharing_usage_limit_exceeded", "message": "limit"}})),
+            )
+            .mount(&s)
+            .await;
+        let c = Client::new(provider(&s.uri(), ProviderKind::ChatGpt), Some("at".into()));
+        let e = c.chat(&ChatRequest::new("m", vec![Message::user("x")])).await.unwrap_err();
+        assert!(matches!(&e, Error::Plan { code, .. } if code == "subscription_sharing_usage_limit_exceeded"));
+        assert!(e.user_message(ln_types::UiLanguage::De).contains("Nutzungslimit"));
+        // A failure inside the stream.
+        let s2 = MockServer::start().await;
+        let sse = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"subscription_sharing_usage_unavailable\",\"message\":\"x\"}}}\n\n";
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&s2)
+            .await;
+        let c2 = Client::new(provider(&s2.uri(), ProviderKind::ChatGpt), Some("at".into()));
+        let e2 = c2.chat(&ChatRequest::new("m", vec![Message::user("x")])).await.unwrap_err();
+        assert!(matches!(&e2, Error::Plan { code, .. } if code == "subscription_sharing_usage_unavailable"));
     }
 
     #[tokio::test]

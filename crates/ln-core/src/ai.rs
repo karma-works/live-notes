@@ -2,7 +2,7 @@
 
 use crate::Core;
 use ln_ai::{ChatRequest, Client, Message};
-use ln_types::{Provider, ProviderKind};
+use ln_types::{ChatRole, Provider, ProviderKind};
 
 /// Why a role is not usable; shown to the user as guidance.
 #[derive(Debug, Clone, PartialEq)]
@@ -15,6 +15,8 @@ pub enum Unavailable {
     Server(String),
     /// The monthly cost limit is reached (SPEC §9.5).
     CostLimit,
+    /// The role uses the ChatGPT plan, but nobody is signed in or plan usage was declined.
+    ChatGptSignedOut,
 }
 
 pub struct RoleClient {
@@ -25,8 +27,14 @@ pub struct RoleClient {
 
 impl Core {
     pub(crate) fn assistant(&self) -> Result<RoleClient, Unavailable> {
+        self.role(ChatRole::Assistant)
+    }
+
+    /// The client for questions, live suggestions or the summary; each can use its own model.
+    pub(crate) fn role(&self, role: ChatRole) -> Result<RoleClient, Unavailable> {
         let s = self.settings();
-        self.resolve(&s.roles.assistant.provider, &s.roles.assistant.model, true)
+        let c = s.roles.get(role);
+        self.resolve(&c.provider, &c.model, true)
     }
 
     /// Image understanding role; used for image descriptions from v1.1 on (SPEC §16).
@@ -41,6 +49,11 @@ impl Core {
         let p = s.provider(provider).cloned().ok_or(Unavailable::ModelMissing)?;
         if p.is_cloud && s.privacy.offline_mode {
             return Err(Unavailable::Offline);
+        }
+        if p.kind == ProviderKind::ChatGpt {
+            // Billed to the plan, so the monthly cost limit does not apply.
+            let token = self.chatgpt_token()?;
+            return Ok(RoleClient { client: Client::new(p, Some(token)), model: model.to_string(), cloud: true });
         }
         if p.is_cloud && self.cost_limit_reached() {
             return Err(Unavailable::CostLimit);
@@ -67,15 +80,37 @@ impl Core {
 
     /// True if the assistant could answer now (for UI hints).
     pub fn assistant_ready(&self) -> bool {
+        self.role_ready(ChatRole::Assistant)
+    }
+
+    pub fn role_ready(&self, role: ChatRole) -> bool {
         let s = self.settings();
-        let Some(p) = s.provider(&s.roles.assistant.provider) else { return false };
+        let c = s.roles.get(role);
+        let Some(p) = s.provider(&c.provider) else { return false };
         if p.is_cloud && s.privacy.offline_mode {
             return false;
         }
         match p.kind {
-            ProviderKind::LocalLlama => self.model_installed(&s.roles.assistant.model),
+            ProviderKind::LocalLlama => self.model_installed(&c.model),
             ProviderKind::OpenRouter | ProviderKind::OpenAi => self.has_api_key(&p.id),
+            ProviderKind::ChatGpt => self.chatgpt_ready(),
             _ => true,
+        }
+    }
+
+    /// What the user still has to do before `role` works, if it is a key or a sign-in.
+    pub(crate) fn role_setup_step(&self, role: ChatRole) -> Option<crate::SetupStep> {
+        if self.role_ready(role) {
+            return None;
+        }
+        let s = self.settings();
+        let p = s.provider(&s.roles.get(role).provider)?;
+        match p.kind {
+            ProviderKind::ChatGpt => Some(crate::SetupStep::ChatGptSignIn),
+            ProviderKind::OpenRouter | ProviderKind::OpenAi if !s.privacy.offline_mode => {
+                Some(crate::SetupStep::AssistantKeyMissing(p.name.clone()))
+            }
+            _ => None,
         }
     }
 
@@ -151,6 +186,11 @@ impl Core {
                 tr(ui, "Während der Aufnahme ist das lokale Modell pausiert.", "The local model is paused during recording.")
             }
             Unavailable::Server(e) => tr(ui, &format!("Modell nicht erreichbar ({e})."), &format!("Model unavailable ({e}).")),
+            Unavailable::ChatGptSignedOut => tr(
+                ui,
+                "Melde dich in den Einstellungen mit ChatGPT an, um dein Abo zu nutzen.",
+                "Sign in with ChatGPT in Settings to use your plan.",
+            ),
             Unavailable::CostLimit => tr(
                 ui,
                 "Das Monatslimit für Cloud-Kosten ist erreicht. Du kannst es in den Einstellungen anheben.",

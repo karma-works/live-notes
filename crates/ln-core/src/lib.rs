@@ -3,6 +3,7 @@
 
 mod ai;
 mod ask;
+mod chatgpt;
 mod events;
 mod indexer;
 mod models;
@@ -13,7 +14,9 @@ mod suggest;
 mod summary;
 
 pub use ask::{AskScope, Citation};
+pub use chatgpt::ChatGptStatus;
 pub use events::{CoreEvent, EventReceiver};
+pub use ln_ai::chatgpt::USAGE_URL as CHATGPT_USAGE_URL;
 pub use ln_ai::prompts::Task;
 pub use ln_audio::{CaptureConfig, Source};
 pub use ln_index::{SearchFilter, SearchHit, SourceRow};
@@ -28,6 +31,8 @@ pub enum SetupStep {
     MicrophoneDenied,
     /// Provider name.
     AssistantKeyMissing(String),
+    /// A role uses the ChatGPT plan, but nobody is signed in (or plan usage was declined).
+    ChatGptSignIn,
     LlamaServerMissing,
 }
 pub use probe::{ChannelProbe, ProbeReport};
@@ -69,6 +74,18 @@ pub struct Core {
     recording: Mutex<Option<recording::Session>>,
     /// Suggestions for the user's own notes, not yet accepted (kept out of the file).
     additions: Mutex<std::collections::HashMap<PathBuf, Vec<String>>>,
+    chatgpt: chatgpt::State,
+}
+
+/// Opens a URL in the user's default browser.
+pub(crate) fn open_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(not(target_os = "macos"))]
+    let r = std::process::Command::new("xdg-open").arg(url).spawn();
+    if let Err(e) = r {
+        tracing::error!("opening the browser failed: {e}");
+    }
 }
 
 impl Core {
@@ -96,6 +113,7 @@ impl Core {
             indexer: indexer::IndexerHandle::default(),
             recording: Mutex::new(None),
             additions: Mutex::new(Default::default()),
+            chatgpt: Default::default(),
         });
         std::fs::create_dir_all(core.notes_dir())?;
         recording::recover(&core);
@@ -175,9 +193,21 @@ impl Core {
     }
 
     pub(crate) fn client_for(&self, provider: &str) -> Option<ln_ai::Client> {
+        let key = match self.settings.read().provider(provider)?.kind {
+            ln_types::ProviderKind::ChatGpt => self.chatgpt_token_cached(),
+            _ => self.api_key(provider),
+        };
+        self.client_with_key(provider, key)
+    }
+
+    pub(crate) fn client_with_token(&self, provider: &str, token: String) -> Option<ln_ai::Client> {
+        self.client_with_key(provider, Some(token))
+    }
+
+    fn client_with_key(&self, provider: &str, key: Option<String>) -> Option<ln_ai::Client> {
         let s = self.settings.read();
         let p = s.provider(provider)?.clone();
-        let mut c = ln_ai::Client::new(p, self.api_key(provider));
+        let mut c = ln_ai::Client::new(p, key);
         c.deny_data_collection = s.privacy.openrouter_deny_data_collection;
         Some(c)
     }
@@ -258,10 +288,20 @@ impl Core {
         if ln_platform::microphone_permission() == ln_platform::Permission::Denied {
             v.push(SetupStep::MicrophoneDenied);
         }
-        if !self.assistant_ready() {
-            let s = self.settings();
-            let name = s.provider(&s.roles.assistant.provider).map(|p| p.name.clone()).unwrap_or_default();
-            v.push(SetupStep::AssistantKeyMissing(name));
+        // One step per missing key or sign-in, even if several roles share it.
+        let s = self.settings();
+        for role in ln_types::ChatRole::ALL {
+            if role == ln_types::ChatRole::Suggestions && !s.live_suggestions.enabled {
+                continue;
+            }
+            if role == ln_types::ChatRole::Summary && !s.notes.auto_summary {
+                continue;
+            }
+            if let Some(step) = self.role_setup_step(role)
+                && !v.contains(&step)
+            {
+                v.push(step);
+            }
         }
         if ln_models::find_llama_server().is_none() {
             v.push(SetupStep::LlamaServerMissing);

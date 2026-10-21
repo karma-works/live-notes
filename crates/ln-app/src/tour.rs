@@ -128,6 +128,33 @@ pub fn run(core: Arc<Core>, handle: AnyWindowHandle, view: Entity<AppView>, cx: 
         let shows_key = steps.iter().any(|s| matches!(s, ln_core::SetupStep::AssistantKeyMissing(_)));
         r.check("setup_lists_missing_key", shows_key == wants_key, format!("{steps:?}"));
 
+        // 3b. Summary on the ChatGPT plan, signed out: its own setup step, the other roles keep
+        //     their models, and the settings show the sign-in.
+        let before_roles = core.settings().roles.clone();
+        core.update_settings(|s| {
+            s.roles.set(ln_types::ChatRole::Summary, ln_types::RoleConfig { provider: "chatgpt".into(), model: "gpt-plan".into() })
+        });
+        let roles = core.settings().roles;
+        let separate = roles.get(ln_types::ChatRole::Summary).provider == "chatgpt"
+            && roles.get(ln_types::ChatRole::Suggestions) == before_roles.get(ln_types::ChatRole::Suggestions)
+            && roles.assistant == before_roles.assistant;
+        r.check("roles_are_separate", separate, format!("{roles:?}"));
+        let steps = core.setup_steps();
+        let signed_out = core.chatgpt_status() == ln_core::ChatGptStatus::SignedOut;
+        r.check("setup_asks_for_chatgpt_sign_in", !signed_out || steps.contains(&ln_core::SetupStep::ChatGptSignIn), format!("{steps:?}"));
+        dispatch(cx, handle, crate::OpenSettings);
+        wait(cx, 1200).await;
+        if let Some(h) = cx.update(|cx| cx.windows().into_iter().find(|w| *w != handle)) {
+            // Tall enough to show the ChatGPT section and the model of every role.
+            let _ = cx.update_window(h, |_, window, _| window.resize(size(px(640.), px(1900.))));
+            wait(cx, 600).await;
+            shot(cx, h, &dir, "07b-settings-chatgpt");
+            let _ = cx.update_window(h, |_, window, _| window.remove_window());
+            wait(cx, 300).await;
+        }
+        shot(cx, handle, &dir, "07c-setup-chatgpt");
+        core.update_settings(|s| s.roles = before_roles.clone());
+
         seed(&notes);
         core.rebuild_index();
         wait(cx, 2500).await;

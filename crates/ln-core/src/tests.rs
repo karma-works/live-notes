@@ -193,3 +193,72 @@ fn missing_key_gives_guidance_and_first_run_plan() {
     assert!(matches!(core.assistant(), Err(crate::ai::Unavailable::CostLimit)));
     core.shutdown();
 }
+
+#[test]
+fn summary_on_chatgpt_plan_with_its_own_role() {
+    use ln_types::{ChatRole, RoleConfig};
+    use wiremock::matchers::{body_partial_json, body_string_contains, header};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(async {
+        let s = MockServer::start().await;
+        let summary =
+            json!({"title": "Plan", "summary": ["Über das Abo zusammengefasst"], "decisions": [], "tasks": [], "note_additions": []});
+        let delta = json!({"type": "response.output_text.delta", "delta": summary.to_string()});
+        let sse = format!(
+            "data: {delta}\n\ndata: {}\n\n",
+            json!({"type": "response.completed", "response": {"usage": {"input_tokens": 50, "output_tokens": 20}}})
+        );
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(header("authorization", "Bearer at-new"))
+            .and(body_partial_json(json!({"model": "gpt-plan", "store": false, "stream": true})))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&s)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"access_token": "at-new", "refresh_token": "rt-2", "expires_in": 3600})),
+            )
+            .mount(&s)
+            .await;
+        s
+    });
+    let (dir, core, _rx) = core_with(&server.uri());
+    // Signed out: the checklist asks for the sign-in, the summary role is unavailable.
+    core.update_settings(|s| {
+        s.roles.set(ChatRole::Summary, RoleConfig { provider: "chatgpt".into(), model: "gpt-plan".into() });
+        for p in s.providers.iter_mut() {
+            if p.id == "chatgpt" {
+                p.base_url = server.uri();
+            }
+        }
+    });
+    assert!(core.setup_steps().contains(&SetupStep::ChatGptSignIn));
+    assert!(matches!(core.role(ChatRole::Summary), Err(crate::ai::Unavailable::ChatGptSignedOut)));
+    assert!(core.role(ChatRole::Assistant).is_ok(), "questions keep their own model");
+    // Signed in with an expiring token: it is refreshed first, and the cost limit does not apply.
+    core.chatgpt.endpoints.lock().token = format!("{}/token", server.uri());
+    core.secrets.set("chatgpt", &crate::chatgpt::test_credentials(1, Some("rt-1"))).unwrap();
+    *core.chatgpt.stored.lock() = None;
+    core.costs.record_audio("openai", "gpt-transcribe", None, 60.0 * 60.0 * 30.0);
+    core.update_settings(|s| s.costs.monthly_limit_usd = 1.0);
+    assert!(!core.setup_steps().contains(&SetupStep::ChatGptSignIn));
+    assert!(matches!(core.chatgpt_status(), ChatGptStatus::SignedIn { plan_usage: true, .. }));
+    assert!(matches!(core.role(ChatRole::Assistant), Err(crate::ai::Unavailable::CostLimit)));
+    let note = dir.path().join("n.md");
+    std::fs::write(&note, "---\nid: x\n---\n\n<!-- ln:transcript -->\n## Transkript\n[00:00:01] Ich (de): Wir planen das Budget.\n")
+        .unwrap();
+    crate::summary::summarize(&core, &note);
+    let text = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .collect::<String>();
+    assert!(text.contains("Über das Abo zusammengefasst"), "{text}");
+    let saved = core.secrets.get("chatgpt").unwrap();
+    assert!(saved.contains("at-new") && saved.contains("rt-2"), "rotated tokens are stored");
+    core.shutdown();
+}

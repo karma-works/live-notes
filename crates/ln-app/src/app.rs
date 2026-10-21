@@ -40,6 +40,7 @@ pub struct AppView {
     first_run: Option<Entity<FirstRunView>>,
     sources: Option<Entity<SourcesView>>,
     settings: Option<WeakEntity<crate::settings_view::SettingsView>>,
+    settings_window: Option<AnyWindowHandle>,
     download: Option<f32>,
     starting: bool,
     sidebar_open: bool,
@@ -97,6 +98,7 @@ impl AppView {
             first_run,
             sources: None,
             settings: None,
+            settings_window: None,
             download: None,
             starting: false,
             sidebar_open: true,
@@ -185,6 +187,22 @@ impl AppView {
             CoreEvent::SettingsChanged => {
                 crate::i18n::set_language(self.core.ui_language());
                 cx.notify();
+            }
+            CoreEvent::ChatGptChanged { first_sign_in } => {
+                if let Some(s) = self.settings.as_ref().and_then(|w| w.upgrade()) {
+                    // The settings live in their own window.
+                    let handle = self.settings_window;
+                    match handle {
+                        Some(h) => {
+                            let _ = h.update(cx, |_, w, cx| s.update(cx, |s, cx| s.chatgpt_changed(first_sign_in, w, cx)));
+                        }
+                        None => s.update(cx, |_, cx| cx.notify()),
+                    }
+                } else if first_sign_in {
+                    window.open_alert_dialog(cx, |alert, _, _| {
+                        alert.title(t("chatgpt-first-title")).description(t("chatgpt-first-body")).ok_text(t("got-it"))
+                    });
+                }
             }
             CoreEvent::Notice(msg) => window.push_notification(msg, cx),
         }
@@ -375,11 +393,12 @@ impl AppView {
         };
         let slot: std::rc::Rc<std::cell::RefCell<Option<WeakEntity<crate::settings_view::SettingsView>>>> = Default::default();
         let slot2 = slot.clone();
-        let _ = gpui_kit::open_window(options, cx, move |window, cx| {
+        let w = gpui_kit::open_window(options, cx, move |window, cx| {
             let v = cx.new(|cx| crate::settings_view::SettingsView::new(core.clone(), window, cx));
             *slot2.borrow_mut() = Some(v.downgrade());
             v
         });
+        self.settings_window = w.ok().map(|(h, _)| h);
         self.settings = slot.borrow().clone();
     }
 
@@ -536,6 +555,7 @@ impl AppView {
         for (i, step) in steps.iter().enumerate() {
             let (text, action): (String, Option<(&str, u8)>) = match step {
                 AssistantKeyMissing(p) => (format!("{} ({p})", t("setup-key")), Some((t("setup-key-action"), 0))),
+                ChatGptSignIn => (t("setup-chatgpt").to_string(), Some((t("setup-chatgpt-action"), 0))),
                 MicrophoneDenied => (t("setup-mic").to_string(), Some((t("open-system-settings"), 1))),
                 TranscriptionModelMissing => (t("setup-model").to_string(), None),
                 LlamaServerMissing => (t("setup-llama").to_string(), None),
