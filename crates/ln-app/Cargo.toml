@@ -36,6 +36,7 @@ chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 global-hotkey = "0.7"
+libc = "0.2"
 tray-icon = "0.21"
 # Only for the screenshot tour: enables offscreen rendering in the GPUI the kit already uses.
 gpui-pre = { version = "=0.3.9", features = ["test-support"], optional = true }

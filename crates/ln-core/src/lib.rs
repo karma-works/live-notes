@@ -347,13 +347,19 @@ impl Core {
         self.rt.handle()
     }
 
-    /// Stops recording (saving it), background work and local model servers.
-    pub fn shutdown(self: &Arc<Self>) {
+    /// Stops recording (saving it), background work, the transcription model and local model
+    /// servers. Returns false when the transcription model could not be released in time.
+    pub fn shutdown(self: &Arc<Self>) -> bool {
         if self.recording.lock().is_some() {
             self.stop_recording_blocking();
         }
         self.indexer.shutdown();
         self.models.stop_all();
+        let released = self.release_asr(std::time::Duration::from_secs(10));
+        if !released {
+            tracing::warn!("shutdown: transcription worker still busy");
+        }
+        released
     }
 }
 

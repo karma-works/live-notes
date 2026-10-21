@@ -73,10 +73,7 @@ pub fn install(core: Arc<Core>, handle: AnyWindowHandle, view: Entity<AppView>, 
                     cx.update(|cx| cx.activate(true));
                     let _ = cx.update_window(handle, |_, window, _| window.activate_window());
                 } else if id == ids.3 {
-                    cx.update(|cx| {
-                        core.shutdown();
-                        cx.quit()
-                    });
+                    cx.update(|cx| cx.quit());
                 }
             }
         }

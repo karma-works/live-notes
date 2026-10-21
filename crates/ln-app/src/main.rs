@@ -76,11 +76,18 @@ fn main() {
             KeyBinding::new("cmd-[", GoBack, None),
             KeyBinding::new("cmd-]", GoForward, None),
         ]);
+        cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+        // Every quit path ends here: menu, ⌘Q, tray, Dock, logout and AppleScript `quit`.
         let quit_core = core.clone();
-        cx.on_action(move |_: &Quit, cx: &mut App| {
-            quit_core.shutdown();
-            cx.quit();
-        });
+        cx.on_app_quit(move |_| {
+            if !quit_core.shutdown() {
+                // A model still loaded makes whisper.cpp abort in its exit-time cleanup; the notes
+                // are already saved, so skip that cleanup instead of ending with a crash report.
+                unsafe { libc::_exit(0) };
+            }
+            async {}
+        })
+        .detach();
         cx.set_menus([
             Menu::new("Live Notes").items([
                 MenuItem::action(i18n::t("settings"), OpenSettings),

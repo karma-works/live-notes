@@ -90,6 +90,8 @@ pub(crate) struct AsrWorker {
     tx: Sender<AsrJob>,
     name: Arc<Mutex<String>>,
     cloud: bool,
+    /// Disconnects once the worker thread has ended and dropped its model.
+    done: Receiver<()>,
 }
 
 pub(crate) struct Session {
@@ -210,13 +212,26 @@ impl Core {
         let name = Arc::new(Mutex::new(String::new()));
         let me = self.clone();
         let n2 = name.clone();
+        let (done_tx, done) = crossbeam_channel::bounded::<()>(0);
         std::thread::Builder::new()
             .name("ln-asr".into())
-            .spawn(move || asr_worker_loop(&me, loader, rx, &n2, cloud))
+            .spawn(move || {
+                let _done = done_tx;
+                asr_worker_loop(&me, loader, rx, &n2, cloud)
+            })
             .map_err(|e| Error::User(e.to_string()))?;
-        let w = Arc::new(AsrWorker { key, tx, name, cloud });
+        let w = Arc::new(AsrWorker { key, tx, name, cloud, done });
         *g = Some(w.clone());
         Ok(w)
+    }
+
+    /// Ends the transcription worker and waits until it has released its model. whisper.cpp's
+    /// Metal backend aborts the process at exit while a model is still loaded.
+    pub(crate) fn release_asr(&self, wait: std::time::Duration) -> bool {
+        let Some(w) = self.asr.lock().take() else { return true };
+        let done = w.done.clone();
+        drop(w);
+        matches!(done.recv_timeout(wait), Err(crossbeam_channel::RecvTimeoutError::Disconnected))
     }
 
     /// Checks right away that transcription can work (model downloaded, key present) and returns
