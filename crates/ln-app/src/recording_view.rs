@@ -291,6 +291,7 @@ impl Render for RecordingView {
                                 Button::new("stop")
                                     .danger()
                                     .label(t("stop"))
+                                    .tooltip_with_action(t("stop"), &crate::ToggleRecording, None)
                                     .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::ToggleRecording), cx)),
                             ),
                     ),

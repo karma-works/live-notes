@@ -283,7 +283,7 @@ impl NoteView {
         cx.notify();
     }
 
-    fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let path = self.file.path.clone();
         let core = self.core.clone();
         let me = cx.entity().downgrade();
@@ -414,7 +414,7 @@ impl NoteView {
                     .small()
                     .ghost()
                     .label(label)
-                    .tooltip("⌘E")
+                    .tooltip_with_action(label, &crate::ToggleEdit, None)
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_mode(window, cx))),
             )
             .child(
@@ -430,7 +430,7 @@ impl NoteView {
                     .small()
                     .ghost()
                     .icon(IconName::Delete)
-                    .tooltip(t("delete"))
+                    .tooltip_with_action(t("delete-note-menu"), &crate::DeleteNote, None)
                     .on_click(cx.listener(|this, _, window, cx| this.delete(window, cx))),
             )
     }

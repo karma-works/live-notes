@@ -284,6 +284,52 @@ pub fn run(core: Arc<Core>, handle: AnyWindowHandle, view: Entity<AppView>, cx: 
         let page = view.read_with(cx, |v, _| v.page());
         r.check("forward_goes_ahead", page.contains("Teamrunde Budget"), page);
 
+        // 4c. A click on the gear opens the settings (regression: the click also reached the
+        //     sources row around it and opened the sources).
+        let gear = view.read_with(cx, |v, _| v.gear_center());
+        let _ = cx.update_window(handle, |_, window, cx| {
+            let (button, modifiers) = (MouseButton::Left, Modifiers::default());
+            window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: gear, pressed_button: None, modifiers }), cx);
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent { button, position: gear, modifiers, click_count: 1, first_mouse: false }),
+                cx,
+            );
+            window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button, position: gear, modifiers, click_count: 1 }), cx);
+        });
+        wait(cx, 600).await;
+        let page = view.read_with(cx, |v, _| v.page());
+        r.check("gear_opens_settings", page == "Settings", page);
+        dispatch(cx, handle, crate::GoBack);
+        wait(cx, 600).await;
+
+        // 4d. Backspace on an open note asks to delete it; outside a text field only.
+        let _ = cx.update_window(handle, |_, window, cx| {
+            window.focus(&view.focus_handle(cx), cx);
+            window.dispatch_keystroke(Keystroke::parse("backspace").expect("key"), cx);
+        });
+        wait(cx, 500).await;
+        let asks = cx.update_window(handle, |_, window, cx| {
+            use gpui_kit::component::WindowExt as _;
+            window.has_active_dialog(cx)
+        });
+        r.check("backspace_asks_to_delete_note", matches!(asks, Ok(true)), format!("{asks:?}"));
+        shot(cx, handle, &dir, "04b-delete-note");
+        let _ = cx.update_window(handle, |_, window, cx| {
+            use gpui_kit::component::WindowExt as _;
+            window.close_all_dialogs(cx);
+        });
+        wait(cx, 300).await;
+        dispatch(cx, handle, crate::ToggleEdit);
+        wait(cx, 600).await;
+        let asks = cx.update_window(handle, |_, window, cx| {
+            use gpui_kit::component::WindowExt as _;
+            window.dispatch_keystroke(Keystroke::parse("backspace").expect("key"), cx);
+            window.has_active_dialog(cx)
+        });
+        r.check("backspace_in_editor_edits_text", matches!(asks, Ok(false)), format!("{asks:?}"));
+        dispatch(cx, handle, crate::ToggleEdit);
+        wait(cx, 300).await;
+
         // 5. ⌘K opens search; a query finds notes.
         dispatch(cx, handle, crate::OpenSearch);
         wait(cx, 500).await;

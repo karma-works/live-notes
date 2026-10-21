@@ -7,7 +7,9 @@ use crate::recording_view::RecordingView;
 use crate::search::{SearchEvent, SearchPanel};
 use crate::settings_view::SettingsView;
 use crate::sources_view::SourcesView;
-use crate::{CloseWindow, GoBack, GoForward, NewNote, OpenSearch, OpenSettings, ShowSources, ToggleEdit, ToggleRecording, ToggleSidebar};
+use crate::{
+    CloseWindow, DeleteNote, GoBack, GoForward, NewNote, OpenSearch, OpenSettings, ShowSources, ToggleEdit, ToggleRecording, ToggleSidebar,
+};
 use chrono::{Datelike, Local, TimeZone};
 use futures::StreamExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -15,7 +17,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, TitleBar, WindowExt as _, h_flex,
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, StyledExt as _, TitleBar, WindowExt as _, h_flex,
     scroll::ScrollableElement as _, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -81,6 +83,8 @@ pub struct AppView {
     starting: bool,
     sidebar_open: bool,
     focus: FocusHandle,
+    /// Where the settings gear was drawn last, so the tour can click it like a user.
+    gear_bounds: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     _subs: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -144,6 +148,7 @@ impl AppView {
             starting: false,
             sidebar_open: true,
             focus: cx.focus_handle(),
+            gear_bounds: Default::default(),
             _subs: subs,
             _tasks: vec![events_task, tick],
         };
@@ -611,6 +616,9 @@ impl AppView {
                             .child(gpui_kit::component::Icon::new(IconName::Search).small())
                             .child(div().flex_1().child(t("search")))
                             .child(div().text_xs().child("⌘K"))
+                            .tooltip(|window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(t("search")).action(&OpenSearch, None).build(window, cx)
+                            })
                             .on_click(cx.listener(|this, _, window, cx| this.open_search(window, cx))),
                     )
                     .child(
@@ -620,6 +628,7 @@ impl AppView {
                             .when(recording.is_none(), |b| b.ghost())
                             .icon(IconName::Mic)
                             .label(record_label)
+                            .tooltip_with_action(if recording.is_some() { t("stop") } else { t("record") }, &ToggleRecording, None)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if this.recording.is_some() && this.selected != Selected::Recording {
                                     this.navigate(Selected::Recording);
@@ -640,7 +649,7 @@ impl AppView {
                             .xsmall()
                             .ghost()
                             .icon(IconName::Plus)
-                            .tooltip(format!("{} ⌘N", t("new-note")))
+                            .tooltip_with_action(t("new-note"), &NewNote, None)
                             .on_click(cx.listener(|this, _, window, cx| this.new_note(window, cx))),
                     ),
             )
@@ -654,26 +663,42 @@ impl AppView {
                     .border_color(theme.sidebar_border)
                     .children(self.render_setup(cx))
                     .child(
+                        // The gear sits next to the sources row, not inside it: a click on it would
+                        // otherwise also reach the row and open the sources instead of the settings.
                         h_flex()
-                            .id("sources")
-                            .px_2()
-                            .py_1()
-                            .gap_2()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .when(selected_sources, |d| d.bg(theme.sidebar_accent))
-                            .child(gpui_kit::component::Icon::new(IconName::Folder).small())
-                            .child(div().flex_1().child(t("sources")))
+                            .gap_1()
                             .child(
-                                Button::new("settings")
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::Settings)
-                                    .tooltip(format!("{} ⌘,", t("settings")))
-                                    .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))),
+                                h_flex()
+                                    .id("sources")
+                                    .flex_1()
+                                    .px_2()
+                                    .py_1()
+                                    .gap_2()
+                                    .rounded_md()
+                                    .text_sm()
+                                    .cursor_pointer()
+                                    .when(selected_sources, |d| d.bg(theme.sidebar_accent))
+                                    .child(gpui_kit::component::Icon::new(IconName::Folder).small())
+                                    .child(div().flex_1().child(t("sources")))
+                                    .on_click(cx.listener(|this, _, _, cx| this.show_sources(cx))),
                             )
-                            .on_click(cx.listener(|this, _, _, cx| this.show_sources(cx))),
+                            .child(
+                                div()
+                                    .relative()
+                                    .child(
+                                        Button::new("settings")
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(IconName::Settings)
+                                            .when(matches!(self.selected, Selected::Settings), |b| b.selected(true))
+                                            .tooltip_with_action(t("settings"), &OpenSettings, None)
+                                            .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))),
+                                    )
+                                    .child({
+                                        let gear = self.gear_bounds.clone();
+                                        canvas(move |b, _, _| gear.set(b), |_, _, _, _| {}).absolute().inset_0()
+                                    }),
+                            ),
                     )
                     .when_some(self.download, |el, f| {
                         el.child(
@@ -700,7 +725,7 @@ impl AppView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::ChevronLeft)
-                    .tooltip(t("back"))
+                    .tooltip_with_action(t("back"), &GoBack, None)
                     .disabled(self.back.is_empty())
                     .on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx))),
             )
@@ -709,7 +734,7 @@ impl AppView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::ChevronRight)
-                    .tooltip(t("forward"))
+                    .tooltip_with_action(t("forward"), &GoForward, None)
                     .disabled(self.forward.is_empty())
                     .on_click(cx.listener(|this, _, window, cx| this.go_forward(window, cx))),
             )
@@ -1100,6 +1125,18 @@ impl AppView {
                         .item(PopupMenuItem::new(t("reveal")).on_click({
                             let path = path.clone();
                             move |_, _, cx| cx.reveal_path(&path)
+                        }))
+                        // The action only shows the shortcut; the handler deletes this note.
+                        .item(PopupMenuItem::new(t("delete-note-menu")).action(Box::new(DeleteNote)).on_click({
+                            let (weak, path) = (weak.clone(), path.clone());
+                            move |_, window, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.open_note(path.clone(), window, cx);
+                                    if let Some(note) = &this.note {
+                                        note.update(cx, |n, cx| n.delete(window, cx));
+                                    }
+                                });
+                            }
                         }));
                     if !list.is_empty() {
                         menu = menu.separator().label(t("categories"));
@@ -1249,6 +1286,14 @@ impl Render for AppView {
                     n.update(cx, |n, cx| n.toggle_mode(window, cx));
                 }
             }))
+            .on_action(cx.listener(|this, _: &DeleteNote, window, cx| {
+                if let Some(n) = &this.note
+                    && matches!(this.selected, Selected::Note(_))
+                    && !window.has_active_dialog(cx)
+                {
+                    n.update(cx, |n, cx| n.delete(window, cx));
+                }
+            }))
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
             .child(TitleBar::new().child(self.render_nav(cx)))
             .child(
@@ -1301,6 +1346,9 @@ impl AppView {
     }
     pub(crate) fn tour_new_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.start_new_category(window, cx);
+    }
+    pub(crate) fn gear_center(&self) -> Point<Pixels> {
+        self.gear_bounds.get().center()
     }
     /// What the main pane shows, for the tour's checks.
     pub(crate) fn page(&self) -> String {

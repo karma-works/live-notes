@@ -21,7 +21,20 @@ use std::sync::Arc;
 
 actions!(
     live_notes,
-    [Quit, NewNote, ToggleRecording, OpenSearch, ToggleEdit, OpenSettings, ToggleSidebar, CloseWindow, ShowSources, GoBack, GoForward]
+    [
+        Quit,
+        NewNote,
+        ToggleRecording,
+        OpenSearch,
+        ToggleEdit,
+        OpenSettings,
+        ToggleSidebar,
+        CloseWindow,
+        ShowSources,
+        GoBack,
+        GoForward,
+        DeleteNote
+    ]
 );
 
 fn main() {
@@ -75,6 +88,11 @@ fn main() {
             KeyBinding::new("cmd-w", CloseWindow, None),
             KeyBinding::new("cmd-[", GoBack, None),
             KeyBinding::new("cmd-]", GoForward, None),
+            // Backspace and Delete remove the open note unless a text field has the keyboard. ⌘⌫ is
+            // bound last, so menus and tooltips show it; inside a text field the field keeps it.
+            KeyBinding::new("backspace", DeleteNote, Some("LiveNotes && !Input")),
+            KeyBinding::new("delete", DeleteNote, Some("LiveNotes && !Input")),
+            KeyBinding::new("cmd-backspace", DeleteNote, None),
         ]);
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
         // Every quit path ends here: menu, ⌘Q, tray, Dock, logout and AppleScript `quit`.
@@ -98,12 +116,18 @@ fn main() {
                 MenuItem::action(i18n::t("new-note"), NewNote),
                 MenuItem::action(i18n::t("search"), OpenSearch),
                 MenuItem::action(i18n::t("edit"), ToggleEdit),
+                MenuItem::action(i18n::t("delete-note-menu"), DeleteNote),
                 MenuItem::separator(),
                 MenuItem::action(i18n::t("record"), ToggleRecording),
                 MenuItem::separator(),
                 MenuItem::action(i18n::t("sources"), ShowSources),
             ]),
-            Menu::new(i18n::t("view")).items([MenuItem::action(i18n::t("back"), GoBack), MenuItem::action(i18n::t("forward"), GoForward)]),
+            Menu::new(i18n::t("view")).items([
+                MenuItem::action(i18n::t("back"), GoBack),
+                MenuItem::action(i18n::t("forward"), GoForward),
+                MenuItem::separator(),
+                MenuItem::action(i18n::t("toggle-sidebar"), ToggleSidebar),
+            ]),
         ]);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1180.), px(760.)), cx))),
