@@ -1,0 +1,22 @@
+[package]
+name = "ln-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local model catalog, resumable downloads with SHA-256 checks, llama-server lifecycle"
+
+[dependencies]
+ln-types.workspace = true
+reqwest.workspace = true
+futures.workspace = true
+tokio.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "ln-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenAI-compatible model client (OpenRouter, OpenAI, LiteLLM, Ollama, llama-server), prompts and cost tracking"
+
+[dependencies]
+ln-types.workspace = true
+reqwest.workspace = true
+eventsource-stream.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+parking_lot.workspace = true
+base64 = "0.22"
+
+[dev-dependencies]
+wiremock.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

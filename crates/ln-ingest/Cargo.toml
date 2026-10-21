@@ -1,0 +1,29 @@
+[package]
+name = "ln-ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Source folders: scanning, text extraction, chunking, change detection (SPEC §5 F4, §8.3)"
+
+[dependencies]
+ln-types.workspace = true
+ln-index.workspace = true
+ln-notes.workspace = true
+ln-platform.workspace = true
+ignore.workspace = true
+notify.workspace = true
+blake3.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+chardetng = "0.1"
+encoding_rs = "0.8"
+html2text = "0.15"
+quick-xml = "0.38"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+mail-parser = "0.11"
+calamine = "0.30"
+whatlang = "0.16"
+
+[dev-dependencies]
+tempfile.workspace = true

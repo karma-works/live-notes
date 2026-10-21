@@ -1,0 +1,30 @@
+[package]
+name = "ln-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OS abstraction (SPEC §7.3): audio capture, OCR, PDF text, secrets; macOS implementation"
+
+[dependencies]
+ln-types.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+keyring = { version = "3", features = ["apple-native", "linux-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSError", "NSURL", "NSData", "NSDictionary", "NSValue", "NSObject", "NSUUID", "block2"] }
+objc2-core-audio = { version = "0.3", features = ["AudioHardware", "block2", "objc2", "objc2-foundation", "objc2-core-audio-types", "dispatch2"] }
+objc2-core-audio-types = { version = "0.3", features = ["CoreAudioBaseTypes"] }
+objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+objc2-avf-audio = { version = "0.3", features = ["AVAudioBuffer", "AVAudioEngine", "AVAudioFormat", "AVAudioIONode", "AVAudioNode", "AVAudioTypes", "AVAudioMixerNode", "block2", "objc2-core-audio-types"] }
+objc2-vision = { version = "0.3", features = ["VNObservation", "VNRecognizeTextRequest", "VNRequest", "VNRequestHandler", "VNTypes", "objc2-core-foundation", "block2"] }
+objc2-pdf-kit = { version = "0.3", features = ["PDFDocument", "PDFPage", "objc2-app-kit"] }
+objc2-core-foundation = "0.3"
+dispatch2 = "0.3"
+
+[dev-dependencies]
+tempfile.workspace = true

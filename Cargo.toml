@@ -1,0 +1,64 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ln-types",
+    "crates/ln-notes",
+    "crates/ln-index",
+    "crates/ln-ai",
+    "crates/ln-platform",
+    "crates/ln-ingest",
+    "crates/ln-asr",
+    "crates/ln-audio",
+    "crates/ln-models",
+    "crates/ln-core",
+    "crates/ln-bench",
+]
+# ln-app (GPUI) is a separate member so the non-UI crates build without Xcode.
+exclude = []
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/karma-works/live-notes"
+rust-version = "1.99"
+
+[workspace.dependencies]
+ln-types = { path = "crates/ln-types" }
+ln-notes = { path = "crates/ln-notes" }
+ln-index = { path = "crates/ln-index" }
+ln-ai = { path = "crates/ln-ai" }
+ln-platform = { path = "crates/ln-platform" }
+ln-ingest = { path = "crates/ln-ingest" }
+ln-asr = { path = "crates/ln-asr" }
+ln-audio = { path = "crates/ln-audio" }
+ln-models = { path = "crates/ln-models" }
+ln-core = { path = "crates/ln-core" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+toml = "0.9"
+chrono = { version = "0.4", features = ["serde"] }
+ulid = "1"
+regex = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "multipart"] }
+eventsource-stream = "0.2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+sqlite-vec = "0.1.6"
+blake3 = "1"
+ignore = "0.4"
+notify = "8"
+dirs = "6"
+hound = "3"
+sha2 = "0.10"
+wiremock = "0.6"

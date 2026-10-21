@@ -1,0 +1,27 @@
+[package]
+name = "ln-asr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Voice activity detection, language choice, transcription and post-processing (SPEC §5 F2)"
+
+[features]
+default = ["whisper"]
+whisper = ["dep:whisper-rs"]
+
+[dependencies]
+ln-types.workspace = true
+ln-ai.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+hound.workspace = true
+regex.workspace = true
+ferrous-opencc = "0.4"
+rubato = "0.16"
+whisper-rs = { version = "0.16", features = ["metal"], optional = true }
+
+[dev-dependencies]
+tokio.workspace = true
+wiremock.workspace = true
+serde_json.workspace = true
