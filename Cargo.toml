@@ -14,8 +14,10 @@ members = [
     "crates/ln-bench",
     "crates/ln-app",
 ]
-# ln-app (GPUI) is a separate member so the non-UI crates build without Xcode.
-exclude = []
+
+[profile.release]
+strip = true
+lto = "thin"
 
 [workspace.package]
 version = "0.1.0"

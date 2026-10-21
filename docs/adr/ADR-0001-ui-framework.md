@@ -1,6 +1,6 @@
 # ADR-0001: UI-Framework
 
-- Status: Vorschlag
+- Status: Angenommen (umgesetzt mit gpui-kit 0.8 / gpui-pre 0.3.9; baut ohne Xcode)
 - Datum: 2026-10-21
 
 ## Kontext
@@ -109,3 +109,12 @@ Absicherung gegen das pre-1.0-Risiko:
 - Sehr gute Performance und Typografie, insbesondere für Chinesisch.
 - Wir akzeptieren Upgrade-Aufwand bei GPUI-Versionssprüngen.
 - Plattform zunächst nur macOS; GPUI unterstützt inzwischen auch Linux/Windows, das bleibt eine Option.
+
+## Erfahrungen aus der Umsetzung (2026-10-21)
+
+- `gpui-kit` bündelt GPUI und die Komponenten mit passender Version; ein Crate genügt.
+- Markdown-Ansicht, Editor mit tree-sitter-Hervorhebung, Dialoge und Benachrichtigungen funktionieren
+  wie dokumentiert. Anklickbare Aufgaben bietet die Markdown-Ansicht nicht; die App rendert sie selbst.
+- Offscreen-Rendering (`render_to_image`, Feature `screenshots`) erlaubt Screenshots ohne
+  Bildschirmaufnahme-Berechtigung.
+- Noch nicht praktisch geprüft: Pinyin-Eingabe (IME) im Editor.

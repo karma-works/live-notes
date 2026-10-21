@@ -27,11 +27,7 @@ gpui-kit = { version = "0.8", features = [
     "tree-sitter-rust",
     "tree-sitter-python",
     "tree-sitter-javascript",
-    "tree-sitter-typescript",
     "tree-sitter-bash",
-    "tree-sitter-yaml",
-    "tree-sitter-toml",
-    "tree-sitter-sql",
 ] }
 futures.workspace = true
 parking_lot.workspace = true

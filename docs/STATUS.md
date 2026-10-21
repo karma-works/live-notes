@@ -13,6 +13,7 @@ echte Aufnahme über Mikrofon und System-Audio** – das ist die Abnahme durch d
 | `cargo fmt --check` | sauber |
 | `cargo deny check` | Lizenzen, Sicherheitsmeldungen, Netzwerkregel (§11) ok |
 | Echte Modelle (`ln-bench`, M1 8 GB) | Spracherkennung de/en/zh/fr/es je Abschnitt korrekt (Konfidenz 0,96–1,00), Echtzeitfaktor **0,11**, Embeddings sprachübergreifend (Ähnlichkeit 0,48–0,65 verwandt vs. 0,10 fremd) |
+| App-Bundle (`scripts/bundle-macos.sh`, Release, signiert ad-hoc + Hardened Runtime) | **37 MB** (Ziel < 40 MB); Arbeitsspeicher im Leerlauf **66 MB** (Ziel < 80 MB) |
 | App mit echter Pipeline (Tour, Audiodateien statt Geräten) | Aufnahme → Live-Transkript in 5 Sprachen → Live-Vorschlag → Markdown-Notiz; Screenshots in `docs/screenshots/` |
 
 ## Funktionen
@@ -57,6 +58,10 @@ echte Aufnahme über Mikrofon und System-Audio** – das ist die Abnahme durch d
 - Chinesisch mit synthetischer Stimme: einzelne Verhörer („日算“ statt „预算“).
 - Treffer-Ausschnitte zeigen rohes Markdown (z. B. `- [ ]`).
 - Der Zeitstempel des ersten Abschnitts kann wegen der VAD-Polsterung `00:00:00` sein.
+- Code-Hervorhebung in Notizen nur für Markdown, Rust, Python, JavaScript und Bash (Größe des
+  Bundles); weitere Grammatiken lassen sich in `crates/ln-app/Cargo.toml` zuschalten.
+- Xcode ist für den Build nicht nötig (GPUI kompiliert Shader zur Laufzeit); die Installation
+  über den App Store wartete beim Abschluss noch auf das Administrator-Passwort.
 
 ## Abnahme durch den Projektinhaber
 
