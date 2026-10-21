@@ -3,5 +3,13 @@ name = "ln-audio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Recording capture: both channels, levels, file sources for tests (SPEC §5 F1)"
 
 [dependencies]
+ln-types.workspace = true
+ln-platform.workspace = true
+crossbeam-channel.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+hound.workspace = true

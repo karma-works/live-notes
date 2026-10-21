@@ -1402,14 +1402,55 @@ dependencies = [
 [[package]]
 name = "ln-audio"
 version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "hound",
+ "ln-platform",
+ "ln-types",
+ "parking_lot",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "ln-bench"
 version = "0.1.0"
+dependencies = [
+ "ln-ai",
+ "ln-asr",
+ "ln-index",
+ "ln-models",
+ "ln-types",
+ "tokio",
+]
 
 [[package]]
 name = "ln-core"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossbeam-channel",
+ "futures",
+ "hound",
+ "ln-ai",
+ "ln-asr",
+ "ln-audio",
+ "ln-index",
+ "ln-ingest",
+ "ln-models",
+ "ln-notes",
+ "ln-platform",
+ "ln-types",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "ulid",
+ "wiremock",
+]
 
 [[package]]
 name = "ln-index"

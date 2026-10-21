@@ -3,5 +3,13 @@ name = "ln-bench"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Benchmarks and model checks: transcription accuracy/speed, embeddings, downloads (SPEC §16)"
+publish = false
 
 [dependencies]
+ln-types.workspace = true
+ln-asr.workspace = true
+ln-ai.workspace = true
+ln-models.workspace = true
+ln-index.workspace = true
+tokio.workspace = true

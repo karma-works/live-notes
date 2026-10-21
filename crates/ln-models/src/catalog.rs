@@ -71,6 +71,22 @@ pub const CATALOG: &[ModelSpec] = &[
         min_ram_gb: 4,
     },
     ModelSpec {
+        id: "whisper-base-q8_0",
+        display: "Whisper base (Spracherkennung)",
+        kind: ModelKind::Asr,
+        license: "MIT",
+        license_url: "https://github.com/openai/whisper/blob/main/LICENSE",
+        needs_terms: false,
+        files: &[ModelFile {
+            name: "ggml-base-q8_0.bin",
+            url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q8_0.bin",
+            size: 81_768_585,
+            sha256: "c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9",
+        }],
+        ram_mb: 150,
+        min_ram_gb: 2,
+    },
+    ModelSpec {
         id: "silero-vad-v5",
         display: "Silero VAD",
         kind: ModelKind::Vad,

@@ -27,19 +27,42 @@ mod whisper {
     pub struct WhisperTranscriber {
         _ctx: WhisperContext,
         state: WhisperState,
+        /// Small model for language detection (whisper base): its encoder is ~20x cheaper.
+        lid: Option<(WhisperContext, WhisperState)>,
         model_name: String,
         threads: usize,
     }
 
+    fn load_ctx(path: &std::path::Path) -> Result<(WhisperContext, WhisperState)> {
+        let mut p = WhisperContextParameters::default();
+        p.use_gpu(true);
+        p.flash_attn(true);
+        let ctx = WhisperContext::new_with_params(path, p).map_err(|e| Error::Model(e.to_string()))?;
+        let state = ctx.create_state().map_err(|e| Error::Model(e.to_string()))?;
+        Ok((ctx, state))
+    }
+
     impl WhisperTranscriber {
         pub fn load(path: &std::path::Path, model_name: &str) -> Result<Self> {
-            let mut p = WhisperContextParameters::default();
-            p.use_gpu(true);
-            let ctx = WhisperContext::new_with_params(path, p).map_err(|e| Error::Model(e.to_string()))?;
-            let state = ctx.create_state().map_err(|e| Error::Model(e.to_string()))?;
-            let threads = std::thread::available_parallelism().map(|n| n.get().clamp(1, 8)).unwrap_or(4);
-            Ok(WhisperTranscriber { _ctx: ctx, state, model_name: model_name.into(), threads })
+            Self::load_with_lid(path, model_name, None)
         }
+
+        /// `lid` is an optional small Whisper model used only for language detection.
+        pub fn load_with_lid(path: &std::path::Path, model_name: &str, lid: Option<&std::path::Path>) -> Result<Self> {
+            let (ctx, state) = load_ctx(path)?;
+            let lid = match lid {
+                Some(p) => Some(load_ctx(p)?),
+                None => None,
+            };
+            let threads = std::thread::available_parallelism().map(|n| n.get().clamp(1, 8)).unwrap_or(4);
+            Ok(WhisperTranscriber { _ctx: ctx, state, lid, model_name: model_name.into(), threads })
+        }
+    }
+
+    /// Encoder frames for a section: 50 per second plus a margin, at most the full 30 s.
+    fn audio_ctx(samples: usize) -> i32 {
+        let secs = samples as f32 / crate::RATE as f32;
+        ((((secs * 50.0).ceil() as u32 + 64).div_ceil(64) * 64).min(1500)) as i32
     }
 
     /// Whisper needs at least one second of audio.
@@ -61,8 +84,13 @@ mod whisper {
 
         fn detect(&mut self, pcm: &[f32]) -> Result<Vec<(Lang, f32)>> {
             let pcm = padded(pcm);
-            self.state.pcm_to_mel(&pcm, self.threads).map_err(|e| Error::Transcribe(e.to_string()))?;
-            let (_, probs) = self.state.lang_detect(0, self.threads).map_err(|e| Error::Transcribe(e.to_string()))?;
+            let threads = self.threads;
+            let state = match self.lid.as_mut() {
+                Some((_, st)) => st,
+                None => &mut self.state,
+            };
+            state.pcm_to_mel(&pcm, threads).map_err(|e| Error::Transcribe(e.to_string()))?;
+            let (_, probs) = state.lang_detect(0, threads).map_err(|e| Error::Transcribe(e.to_string()))?;
             Ok(probs
                 .iter()
                 .enumerate()
@@ -87,6 +115,7 @@ mod whisper {
             p.set_suppress_nst(true);
             p.set_no_speech_thold(0.6);
             p.set_temperature(0.0);
+            p.set_audio_ctx(audio_ctx(pcm.len()));
             if !prompt.is_empty() {
                 p.set_initial_prompt(prompt);
             }

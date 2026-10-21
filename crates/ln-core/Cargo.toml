@@ -3,5 +3,34 @@ name = "ln-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Live Notes engine: the facade the UI talks to (recording, notes, search, assistant, models)"
+
+[features]
+default = ["whisper"]
+whisper = ["ln-asr/whisper"]
 
 [dependencies]
+ln-types.workspace = true
+ln-notes.workspace = true
+ln-index.workspace = true
+ln-ai.workspace = true
+ln-platform.workspace = true
+ln-ingest.workspace = true
+ln-asr = { workspace = true, default-features = false }
+ln-audio.workspace = true
+ln-models.workspace = true
+tokio.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+ulid.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
+hound.workspace = true
