@@ -455,5 +455,25 @@ fn notes_are_sorted_into_categories_with_one_request() {
     let moved = core.rename_note(&renamed, "Vokabeln Lektion 4").unwrap();
     assert!(moved.ends_with("Vokabeln Lektion 4.md"));
     assert_eq!(core.list_notes().into_iter().find(|n| n.path == moved).unwrap().title, "Vokabeln Lektion 4");
+
+    // Chosen by hand: automatic sorting leaves the note alone (the mocks allow no more calls).
+    core.toggle_note_category(&moved, "Privat").unwrap();
+    core.add_note_category(&moved, "Chinesisch-Kurs").unwrap();
+    core.add_note_category(&moved, "Chinesisch-Kurs").unwrap();
+    let note = ln_notes::Note::parse(&std::fs::read_to_string(&moved).unwrap()).unwrap();
+    assert_eq!(note.categories(), vec!["Arztagent".to_string(), "Chinesisch-Kurs".to_string()]);
+    assert!(note.categories_manual());
+    std::fs::write(&moved, std::fs::read_to_string(&moved).unwrap() + "\nNeuer Absatz\n").unwrap();
+    assert_eq!(core.classify_note_now(&moved, false).unwrap(), None);
+
+    // Managing the list: + adds with the next free colour, names are unique, − removes.
+    assert!(core.add_category("Kunden"));
+    assert!(!core.add_category("kunden"));
+    assert!(!core.add_category("  "));
+    assert_eq!(core.settings().categories.color_of("Kunden"), Some(TagColor::Orange));
+    core.cycle_category_color("Kunden");
+    assert_eq!(core.settings().categories.color_of("Kunden"), Some(TagColor::Yellow));
+    core.remove_category("Kunden");
+    assert_eq!(core.settings().categories.color_of("Kunden"), None);
     core.shutdown();
 }

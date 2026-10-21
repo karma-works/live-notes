@@ -98,6 +98,9 @@ impl Core {
             return Ok(None);
         }
         let note = NoteFile::open(path).and_then(|f| f.parse()).map_err(|e| e.to_string())?;
+        if note.categories_manual() && !force {
+            return Ok(None);
+        }
         let state = note_state(&note);
         if state.chars().filter(|c| c.is_alphanumeric()).count() < 3 {
             return Ok(None);
@@ -121,16 +124,100 @@ impl Core {
         // user typed by hand that are not in the list stay.
         let mut nf = NoteFile::open(path).map_err(|e| e.to_string())?;
         let mut current = nf.parse().map_err(|e| e.to_string())?;
+        if current.categories_manual() && !force {
+            return Ok(None);
+        }
         chosen.extend(current.categories().into_iter().filter(|c| !list.iter().any(|x| &x.name == c)));
         self.classified.lock().insert(path.to_path_buf(), hash);
-        if current.categories() != chosen {
-            current.set_categories(chosen.clone());
+        if current.categories() != chosen || current.categories_manual() {
+            current.set_categories_manual(chosen.clone(), false);
             nf.text = current.render();
             nf.save(true).map_err(|e| e.to_string())?;
             self.emit(CoreEvent::NoteFileChanged(path.to_path_buf()));
             self.emit(CoreEvent::NotesChanged);
         }
         Ok(Some(chosen))
+    }
+}
+
+impl Core {
+    /// Sets a note's categories by hand. Automatic sorting leaves the note alone from then on,
+    /// until [`Core::reclassify_note`].
+    pub fn set_note_categories(&self, path: &Path, categories: Vec<String>) -> Result<(), String> {
+        let mut nf = NoteFile::open(path).map_err(|e| e.to_string())?;
+        let mut note = nf.parse().map_err(|e| e.to_string())?;
+        if note.categories() == categories && note.categories_manual() {
+            return Ok(());
+        }
+        note.set_categories_manual(categories, true);
+        nf.text = note.render();
+        nf.save(true).map_err(|e| e.to_string())?;
+        self.emit(CoreEvent::NoteFileChanged(path.to_path_buf()));
+        self.emit(CoreEvent::NotesChanged);
+        Ok(())
+    }
+
+    /// Adds or removes one category on a note by hand.
+    pub fn toggle_note_category(&self, path: &Path, name: &str) -> Result<(), String> {
+        let note = NoteFile::open(path).and_then(|f| f.parse()).map_err(|e| e.to_string())?;
+        let mut cats = note.categories();
+        match cats.iter().position(|c| c == name) {
+            Some(i) => {
+                cats.remove(i);
+            }
+            None => cats.push(name.to_string()),
+        }
+        self.set_note_categories(path, cats)
+    }
+
+    /// Adds a category by hand if the note doesn't have it yet (drag and drop).
+    pub fn add_note_category(&self, path: &Path, name: &str) -> Result<(), String> {
+        let note = NoteFile::open(path).and_then(|f| f.parse()).map_err(|e| e.to_string())?;
+        if note.categories().iter().any(|c| c == name) {
+            return Ok(());
+        }
+        let mut cats = note.categories();
+        cats.push(name.to_string());
+        self.set_note_categories(path, cats)
+    }
+
+    /// Hands a note back to automatic sorting and sorts it now, in the background.
+    pub fn reclassify_note(self: &Arc<Self>, path: &Path) {
+        let me = self.clone();
+        let path = path.to_path_buf();
+        std::thread::spawn(move || {
+            if let Err(e) = me.classify_note_now(&path, true) {
+                me.emit(CoreEvent::Notice(e));
+            }
+        });
+    }
+
+    /// Adds a category with the next free colour. Returns false when the name is empty or taken.
+    pub fn add_category(&self, name: &str) -> bool {
+        let name = name.trim().to_string();
+        if name.is_empty() || self.settings().categories.list.iter().any(|c| c.name.eq_ignore_ascii_case(&name)) {
+            return false;
+        }
+        self.update_settings(|s| {
+            let color = s.categories.next_color();
+            s.categories.list.push(Category { name, color, hint: String::new() });
+        });
+        true
+    }
+
+    /// Removes a category from the list. Notes keep the name in their front matter, so adding
+    /// the category again brings them back.
+    pub fn remove_category(&self, name: &str) {
+        self.update_settings(|s| s.categories.list.retain(|c| c.name != name));
+    }
+
+    /// Switches a category to the next tag colour.
+    pub fn cycle_category_color(&self, name: &str) {
+        self.update_settings(|s| {
+            if let Some(c) = s.categories.list.iter_mut().find(|c| c.name == name) {
+                c.color = c.color.next();
+            }
+        });
     }
 }
 

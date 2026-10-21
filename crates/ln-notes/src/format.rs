@@ -28,6 +28,9 @@ pub struct FrontMatter {
     /// The user's categories this note belongs to, set by the decision model or by hand.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
+    /// Set when the user chose the categories by hand; automatic sorting then leaves them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub categories_manual: bool,
     /// Set when the user renamed the file; the app then never renames it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub manual_name: bool,
@@ -214,6 +217,23 @@ impl Note {
             Some(f) => f.categories = categories,
             None if categories.is_empty() => {}
             None => self.front = Some(FrontMatter { categories, ..Default::default() }),
+        }
+    }
+
+    /// True when the user chose the categories by hand.
+    pub fn categories_manual(&self) -> bool {
+        self.front.as_ref().is_some_and(|f| f.categories_manual)
+    }
+
+    /// Sets the categories chosen by hand (or, with `manual = false`, hands them back to
+    /// automatic sorting).
+    pub fn set_categories_manual(&mut self, categories: Vec<String>, manual: bool) {
+        self.set_categories(categories);
+        if manual && self.front.is_none() {
+            self.front = Some(FrontMatter::default());
+        }
+        if let Some(f) = self.front.as_mut() {
+            f.categories_manual = manual;
         }
     }
 
@@ -419,6 +439,22 @@ mod tests {
         // Summary was inserted before the transcript.
         assert_eq!(back.sections.last().unwrap().kind, SectionKind::Transcript);
         assert!(back.section(&SectionKind::Summary).unwrap().body.starts_with("Kurz."));
+    }
+
+    #[test]
+    fn manual_categories_survive_a_roundtrip() {
+        let mut n = Note::parse("# Vokabeln\n").unwrap();
+        n.set_categories_manual(vec!["Kurs".into()], true);
+        let back = Note::parse(&n.render()).unwrap();
+        assert!(back.categories_manual());
+        assert_eq!(back.categories(), vec!["Kurs".to_string()]);
+        // Cleared by hand: stays manual, so automatic sorting does not refill it.
+        let mut cleared = back.clone();
+        cleared.set_categories_manual(vec![], true);
+        assert!(Note::parse(&cleared.render()).unwrap().categories_manual());
+        let mut auto = back;
+        auto.set_categories_manual(vec!["Kurs".into()], false);
+        assert!(!auto.render().contains("categories_manual"));
     }
 
     #[test]

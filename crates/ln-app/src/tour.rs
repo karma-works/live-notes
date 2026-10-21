@@ -220,6 +220,40 @@ pub fn run(core: Arc<Core>, handle: AnyWindowHandle, view: Entity<AppView>, cx: 
             wait(cx, 800).await;
         }
 
+        // 3d. Categories by hand (the drop and right-click path), the filter above the list
+        // (default: all notes) and its menu with + and −.
+        let open_path = view.read_with(cx, |v, cx| v.note_view().map(|n| n.read(cx).path().to_path_buf()));
+        if let Some(p) = &open_path {
+            let _ = cx
+                .update_window(handle, |_, window, cx| view.update(cx, |v, cx| v.assign_category(p, "Chinesisch-Kurs", false, window, cx)));
+            wait(cx, 1200).await;
+            let note = ln_notes::Note::parse(&std::fs::read_to_string(p).unwrap_or_default()).unwrap_or_default();
+            r.check(
+                "category_assigned_by_hand",
+                note.categories().iter().any(|c| c == "Chinesisch-Kurs") && note.categories_manual(),
+                format!("{:?}", note.categories()),
+            );
+            redraw(cx, &view);
+            wait(cx, 300).await;
+            shot(cx, handle, &dir, "02c-category-by-hand");
+        }
+        let all = view.read_with(cx, |v, _| v.shown_note_list()).len();
+        r.check("filter_defaults_to_all", all == view.read_with(cx, |v, _| v.note_list()).len() && all > 0, format!("{all} notes"));
+        let _ = cx.update_window(handle, |_, window, cx| view.update(cx, |v, cx| v.tour_filter(&["Teamrunden"], true, window, cx)));
+        wait(cx, 500).await;
+        let shown = view.read_with(cx, |v, _| v.shown_note_list());
+        r.check(
+            "filter_shows_only_category",
+            !shown.is_empty() && shown.len() < all && shown.iter().all(|(_, c)| c.iter().any(|x| x == "Teamrunden")),
+            format!("{shown:?}"),
+        );
+        shot(cx, handle, &dir, "02d-category-filter");
+        let _ = cx.update_window(handle, |_, window, cx| view.update(cx, |v, cx| v.tour_new_category(window, cx)));
+        wait(cx, 400).await;
+        shot(cx, handle, &dir, "02e-category-new");
+        let _ = cx.update_window(handle, |_, window, cx| view.update(cx, |v, cx| v.tour_filter(&[], false, window, cx)));
+        wait(cx, 300).await;
+
         // 4. ⌘E toggles the editor.
         dispatch(cx, handle, crate::ToggleEdit);
         wait(cx, 800).await;

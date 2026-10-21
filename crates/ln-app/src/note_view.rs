@@ -5,6 +5,7 @@ use crate::markdown::{Block, blocks};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, scroll::ScrollableElement as _, v_flex,
@@ -123,6 +124,14 @@ impl NoteView {
             self.core.classify_note(&self.file.path);
         }
         self.categories_at_edit = self.categories.clone();
+    }
+
+    /// Adds or removes a category by hand (header chips and their menu).
+    fn toggle_category(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_now(cx);
+        if let Err(e) = self.core.toggle_note_category(&self.file.path, name) {
+            window.push_notification(e, cx);
+        }
     }
 
     /// Shows the rename field in the header (also from a double-click in the note list).
@@ -326,15 +335,53 @@ impl NoteView {
                 .into_any_element()
         } else {
             let cats = self.core.settings().categories;
-            let mut chips = h_flex().gap_2().flex_wrap();
-            for c in &self.categories {
+            let mut chips = h_flex().gap_2().flex_wrap().items_center();
+            for (i, c) in self.categories.iter().enumerate() {
+                let name = c.clone();
                 chips = chips.child(
                     h_flex()
                         .gap_1()
+                        .pl_2()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(cx.theme().border)
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(div().size(px(8.)).rounded_full().bg(crate::theme::tag_color(cats.color_of(c))))
-                        .child(c.clone()),
+                        .child(c.clone())
+                        .child(
+                            Button::new(("cat-remove", i))
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::Close)
+                                .tooltip(t("category-remove"))
+                                .on_click(cx.listener(move |this, _, window, cx| this.toggle_category(&name, window, cx))),
+                        ),
+                );
+            }
+            if !cats.list.is_empty() {
+                let weak = cx.entity().downgrade();
+                let has = self.categories.clone();
+                let list: Vec<String> = cats.list.iter().map(|c| c.name.clone()).collect();
+                let core = self.core.clone();
+                let path = self.file.path.clone();
+                chips = chips.child(
+                    Button::new("cat-assign").xsmall().ghost().icon(IconName::Plus).tooltip(t("category-assign")).dropdown_menu(
+                        move |mut menu, _, _| {
+                            for name in &list {
+                                let (weak, name2) = (weak.clone(), name.clone());
+                                menu = menu.item(PopupMenuItem::new(name.clone()).checked(has.contains(name)).on_click(
+                                    move |_, window, cx| {
+                                        let _ = weak.update(cx, |this, cx| this.toggle_category(&name2, window, cx));
+                                    },
+                                ));
+                            }
+                            menu.separator().item(PopupMenuItem::new(t("category-auto")).on_click({
+                                let (core, path) = (core.clone(), path.clone());
+                                move |_, _, _| core.reclassify_note(&path)
+                            }))
+                        },
+                    ),
                 );
             }
             h_flex()

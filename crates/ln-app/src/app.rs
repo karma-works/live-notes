@@ -11,6 +11,8 @@ use crate::{CloseWindow, GoBack, GoForward, NewNote, OpenSearch, OpenSettings, S
 use chrono::{Datelike, Local, TimeZone};
 use futures::StreamExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, TitleBar, WindowExt as _, h_flex,
@@ -32,9 +34,38 @@ enum Selected {
     Settings,
 }
 
+/// A category dragged from the filter menu onto a note in the list.
+#[derive(Clone)]
+pub(crate) struct DraggedCategory {
+    pub name: String,
+    pub color: Hsla,
+}
+
+impl Render for DraggedCategory {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .text_sm()
+            .child(div().size(px(8.)).rounded_full().bg(self.color))
+            .child(self.name.clone())
+    }
+}
+
 pub struct AppView {
     core: Arc<Core>,
     notes: Vec<NoteEntry>,
+    /// Categories the note list is filtered by; empty shows every note.
+    filter: Vec<String>,
+    filter_open: bool,
+    /// When the filter menu closed by a click outside; the same click must not reopen it.
+    filter_closed: Option<std::time::Instant>,
+    new_category: Option<Entity<InputState>>,
     folders: Vec<String>,
     selected: Selected,
     note: Option<Entity<NoteView>>,
@@ -95,6 +126,10 @@ impl AppView {
         let mut v = AppView {
             core,
             notes: vec![],
+            filter: vec![],
+            filter_open: false,
+            filter_closed: None,
+            new_category: None,
             folders: vec![],
             selected: Selected::None,
             note: None,
@@ -525,10 +560,14 @@ impl AppView {
         let theme = cx.theme().clone();
         let recording = self.core.recording_info();
         let mut list = v_flex().gap_px();
-        let groups = group_notes(&self.notes);
         let cats = self.core.settings().categories;
+        let shown: Vec<NoteEntry> =
+            self.notes.iter().filter(|n| self.filter.is_empty() || n.categories.iter().any(|c| self.filter.contains(c))).cloned().collect();
+        let groups = group_notes(&shown);
         if self.notes.is_empty() {
             list = list.child(div().px_3().py_2().text_xs().text_color(theme.muted_foreground).child(t("empty-notes")));
+        } else if shown.is_empty() {
+            list = list.child(div().px_3().py_2().text_xs().text_color(theme.muted_foreground).child(t("categories-none-match")));
         }
         for (label, items) in groups {
             if items.is_empty() {
@@ -605,6 +644,7 @@ impl AppView {
                             .on_click(cx.listener(|this, _, window, cx| this.new_note(window, cx))),
                     ),
             )
+            .child(self.render_filter(&cats, cx))
             .child(div().id("note-list").flex_1().overflow_y_scrollbar().child(list))
             .child(
                 v_flex()
@@ -731,6 +771,248 @@ impl AppView {
         Some(col.into_any_element())
     }
 
+    // ---- categories: filter, add/delete, assignment by hand ------------------------------
+
+    fn toggle_filter_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.filter_open {
+            self.close_filter_menu(window, cx);
+        } else if !self.filter_closed.is_some_and(|t| t.elapsed() < Duration::from_millis(250)) {
+            self.filter_open = true;
+            cx.notify();
+        }
+    }
+
+    fn close_filter_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.filter_open {
+            self.filter_open = false;
+            self.filter_closed = Some(std::time::Instant::now());
+            // The name field may have had the focus: give it back, so shortcuts keep working.
+            if self.new_category.take().is_some() {
+                window.focus(&self.focus, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn toggle_filter(&mut self, name: &str, cx: &mut Context<Self>) {
+        match self.filter.iter().position(|c| c == name) {
+            Some(i) => {
+                self.filter.remove(i);
+            }
+            None => self.filter.push(name.to_string()),
+        }
+        cx.notify();
+    }
+
+    fn start_new_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(t("category-new-placeholder")));
+        self._subs.push(cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, window, cx| {
+            if matches!(ev, InputEvent::PressEnter { .. }) {
+                this.commit_new_category(window, cx);
+            }
+        }));
+        input.update(cx, |i, cx| i.focus(window, cx));
+        self.new_category = Some(input);
+        cx.notify();
+    }
+
+    fn commit_new_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = &self.new_category else { return };
+        let name = input.read(cx).value().trim().to_string();
+        if !self.core.add_category(&name) {
+            window.push_notification(t("category-new-invalid"), cx);
+            return;
+        }
+        self.new_category = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    fn delete_category(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.core.remove_category(name);
+        self.filter.retain(|c| c != name);
+        cx.notify();
+    }
+
+    /// Adds or removes a category on a note by hand; an open note with unsaved edits is saved
+    /// first, so the change doesn't end in a conflict.
+    pub(crate) fn assign_category(
+        &mut self,
+        path: &std::path::Path,
+        name: &str,
+        toggle: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(n) = &self.note
+            && n.read(cx).path() == path
+        {
+            n.update(cx, |n, cx| n.save_now(cx));
+        }
+        let r = if toggle { self.core.toggle_note_category(path, name) } else { self.core.add_note_category(path, name) };
+        if let Err(e) = r {
+            window.push_notification(e, cx);
+        }
+    }
+
+    /// The filter above the note list: "All" by default; its menu (beside the sidebar, so the
+    /// list stays free for dragging) filters, adds and deletes categories.
+    fn render_filter(&self, cats: &ln_types::Categories, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let active: Vec<&ln_types::Category> = cats.list.iter().filter(|c| self.filter.contains(&c.name)).collect();
+        let mut trigger = h_flex()
+            .id("category-filter")
+            .relative()
+            .mx_2()
+            .mt_1()
+            .mb_1()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .rounded_md()
+            .border_1()
+            .border_color(if self.filter_open { theme.ring } else { theme.border })
+            .bg(theme.background)
+            .text_sm()
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_filter_menu(window, cx)));
+        if active.is_empty() {
+            trigger = trigger.child(div().flex_1().text_color(theme.muted_foreground).child(t("filter-all")));
+        } else {
+            trigger = trigger
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .children(active.iter().map(|c| div().size(px(8.)).rounded_full().bg(crate::theme::tag_color(Some(c.color))))),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .whitespace_nowrap()
+                        .child(active.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")),
+                )
+                .child(Button::new("filter-clear").xsmall().ghost().icon(IconName::Close).tooltip(t("filter-clear")).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.filter.clear();
+                        cx.notify();
+                    }),
+                ));
+        }
+        trigger = trigger.child(
+            gpui_kit::component::Icon::new(if self.filter_open { IconName::ChevronRight } else { IconName::ChevronDown })
+                .small()
+                .text_color(theme.muted_foreground),
+        );
+        if self.filter_open {
+            trigger = trigger.child(
+                deferred(
+                    anchored()
+                        .position_mode(AnchoredPositionMode::Local)
+                        .position(point(px(244.), px(-6.)))
+                        .snap_to_window_with_margin(px(8.))
+                        .child(self.render_filter_menu(cats, cx)),
+                )
+                .with_priority(1),
+            );
+        }
+        trigger
+    }
+
+    fn render_filter_menu(&self, cats: &ln_types::Categories, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let check = |on: bool| div().w(px(16.)).flex_none().when(on, |d| d.child(gpui_kit::component::Icon::new(IconName::Check).small()));
+        let count = |name: &str| self.notes.iter().filter(|n| n.categories.iter().any(|c| c == name)).count();
+        let row =
+            |id: ElementId| h_flex().id(id).px_2().py_1().gap_2().rounded_md().text_sm().cursor_pointer().hover(|s| s.bg(theme.accent));
+        let mut menu = v_flex()
+            .id("category-menu")
+            .w(px(250.))
+            .p_1()
+            .gap_px()
+            .rounded_lg()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.popover)
+            .text_color(theme.popover_foreground)
+            .shadow_lg()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| this.close_filter_menu(window, cx)))
+            .child(
+                row("filter-all".into())
+                    .child(check(self.filter.is_empty()))
+                    .child(div().flex_1().child(t("filter-all")))
+                    .child(div().text_xs().text_color(theme.muted_foreground).child(self.notes.len().to_string()))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.filter.clear();
+                        cx.notify();
+                    })),
+            )
+            .child(div().my_1().h_px().bg(theme.border));
+        for (i, c) in cats.list.iter().enumerate() {
+            let name = c.name.clone();
+            let color = crate::theme::tag_color(Some(c.color));
+            let (n1, n2, n3) = (name.clone(), name.clone(), name.clone());
+            menu = menu.child(
+                row(ElementId::Name(format!("filter-cat-{i}").into()))
+                    .group("filter-cat")
+                    .child(check(self.filter.contains(&name)))
+                    .child(
+                        Button::new(("cat-color", i))
+                            .xsmall()
+                            .ghost()
+                            .child(div().size(px(9.)).rounded_full().bg(color))
+                            .tooltip(t("category-color"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.core.cycle_category_color(&n1);
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(name.clone()))
+                    .child(div().text_xs().text_color(theme.muted_foreground).child(count(&name).to_string()))
+                    .child(div().opacity(0.).group_hover("filter-cat", |s| s.opacity(1.)).child(
+                        Button::new(("cat-del", i)).xsmall().ghost().icon(IconName::Minus).tooltip(t("category-delete")).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.delete_category(&n2, cx);
+                            }),
+                        ),
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_filter(&n3, cx)))
+                    .on_drag(DraggedCategory { name: name.clone(), color }, |d, _, _, cx| cx.new(|_| d.clone())),
+            );
+        }
+        if !cats.list.is_empty() {
+            menu = menu.child(div().my_1().h_px().bg(theme.border));
+        }
+        menu = match &self.new_category {
+            Some(input) => menu.child(
+                h_flex().px_1().py_1().gap_1().child(div().flex_1().child(Input::new(input).small())).child(
+                    Button::new("cat-new-ok")
+                        .small()
+                        .ghost()
+                        .icon(IconName::Check)
+                        .on_click(cx.listener(|this, _, window, cx| this.commit_new_category(window, cx))),
+                ),
+            ),
+            None => menu.child(
+                row("cat-new".into())
+                    .text_color(theme.muted_foreground)
+                    .child(gpui_kit::component::Icon::new(IconName::Plus).small())
+                    .child(t("category-new"))
+                    .on_click(cx.listener(|this, _, window, cx| this.start_new_category(window, cx))),
+            ),
+        };
+        if !cats.list.is_empty() {
+            menu = menu.child(div().px_2().pt_1().pb_1().text_xs().text_color(theme.muted_foreground).child(t("category-menu-hint")));
+        }
+        menu
+    }
+
     fn note_row(&self, n: &NoteEntry, cats: &ln_types::Categories, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let selected = matches!(&self.selected, Selected::Note(p) if p == &n.path);
@@ -790,6 +1072,52 @@ impl AppView {
                     note.update(cx, |n, cx| n.start_rename(window, cx));
                 }
             }))
+            // A category dragged from the filter menu lands on the note.
+            .drag_over::<DraggedCategory>(|s, _, _, cx| s.bg(cx.theme().accent))
+            .on_drop(cx.listener({
+                let path = n.path.clone();
+                move |this, d: &DraggedCategory, window, cx| this.assign_category(&path, &d.name, false, window, cx)
+            }))
+            .context_menu({
+                let weak = cx.entity().downgrade();
+                let path = n.path.clone();
+                let has = n.categories.clone();
+                let list: Vec<String> = cats.list.iter().map(|c| c.name.clone()).collect();
+                let core = self.core.clone();
+                move |menu, _, _| {
+                    let mut menu = menu
+                        .item(PopupMenuItem::new(t("rename")).on_click({
+                            let (weak, path) = (weak.clone(), path.clone());
+                            move |_, window, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.open_note(path.clone(), window, cx);
+                                    if let Some(note) = &this.note {
+                                        note.update(cx, |n, cx| n.start_rename(window, cx));
+                                    }
+                                });
+                            }
+                        }))
+                        .item(PopupMenuItem::new(t("reveal")).on_click({
+                            let path = path.clone();
+                            move |_, _, cx| cx.reveal_path(&path)
+                        }));
+                    if !list.is_empty() {
+                        menu = menu.separator().label(t("categories"));
+                        for name in &list {
+                            let (weak, path, name2) = (weak.clone(), path.clone(), name.clone());
+                            menu =
+                                menu.item(PopupMenuItem::new(name.clone()).checked(has.contains(name)).on_click(move |_, window, cx| {
+                                    let _ = weak.update(cx, |this, cx| this.assign_category(&path, &name2, true, window, cx));
+                                }));
+                        }
+                        menu = menu.separator().item(PopupMenuItem::new(t("category-auto")).on_click({
+                            let (core, path) = (core.clone(), path.clone());
+                            move |_, _, _| core.reclassify_note(&path)
+                        }));
+                    }
+                    menu
+                }
+            })
     }
 
     fn render_main(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -952,6 +1280,27 @@ impl AppView {
     /// Note list as shown in the sidebar: title and categories.
     pub(crate) fn note_list(&self) -> Vec<(String, Vec<String>)> {
         self.notes.iter().map(|n| (n.title.clone(), n.categories.clone())).collect()
+    }
+    /// Notes the sidebar shows with the current category filter.
+    pub(crate) fn shown_note_list(&self) -> Vec<(String, Vec<String>)> {
+        self.notes
+            .iter()
+            .filter(|n| self.filter.is_empty() || n.categories.iter().any(|c| self.filter.contains(c)))
+            .map(|n| (n.title.clone(), n.categories.clone()))
+            .collect()
+    }
+    pub(crate) fn tour_filter(&mut self, names: &[&str], open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter = names.iter().map(|n| n.to_string()).collect();
+        if open {
+            self.filter_open = true;
+            self.filter_closed = None;
+        } else {
+            self.close_filter_menu(window, cx);
+        }
+        cx.notify();
+    }
+    pub(crate) fn tour_new_category(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_new_category(window, cx);
     }
     /// What the main pane shows, for the tour's checks.
     pub(crate) fn page(&self) -> String {
