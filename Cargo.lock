@@ -4293,6 +4293,7 @@ dependencies = [
  "ln-platform",
  "ln-types",
  "parking_lot",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "tray-icon",

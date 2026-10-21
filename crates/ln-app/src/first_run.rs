@@ -142,3 +142,12 @@ impl Render for FirstRunView {
         )
     }
 }
+
+#[cfg(feature = "screenshots")]
+impl FirstRunView {
+    /// What a user does: accept the terms and press the start button.
+    pub(crate) fn complete_for_tour(&mut self, cx: &mut Context<Self>) {
+        self.terms = true;
+        self.start(cx);
+    }
+}

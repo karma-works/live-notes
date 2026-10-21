@@ -159,7 +159,8 @@ impl Core {
             let tx = asr_tx.clone();
             let stop = stop.clone();
             let silero = self.models().file("silero-vad-v5", 0).filter(|p| p.exists());
-            std::thread::Builder::new().name("ln-audio".into()).spawn(move || audio_loop(rx, tx, stop, silero)).expect("audio thread")
+            let me = self.clone();
+            std::thread::Builder::new().name("ln-audio".into()).spawn(move || audio_loop(rx, tx, stop, silero, &me)).expect("audio thread")
         };
         let asr_thread = {
             let me = self.clone();
@@ -221,6 +222,10 @@ impl Core {
             // v1.0: "live" uses the same per-section REST path (Realtime adapter is v1.1, SPEC §16).
             return Ok(Box::new(ln_asr::CloudTranscriber::new(c, s.transcription.openai_model.clone(), self.runtime().clone())));
         }
+        self.local_transcriber()
+    }
+
+    pub(crate) fn local_transcriber_pub(&self) -> Result<Box<dyn Transcriber>> {
         self.local_transcriber()
     }
 
@@ -309,6 +314,14 @@ impl Core {
         }
         let elapsed = s.started.elapsed();
         let mut st = s.state.lock();
+        if st.segments.is_empty() && elapsed > Duration::from_secs(5) {
+            self.emit(CoreEvent::Notice(tr(
+                self.ui_language(),
+                "In dieser Aufnahme wurde keine Sprache erkannt. Prüfe Mikrofon und Systemaudio unter Einstellungen → Aufnahme testen.",
+                "No speech was recognised in this recording. Check microphone and system audio in Settings → Test recording.",
+            )));
+        }
+        tracing::info!("recording stopped after {:?}: {} segments", elapsed, st.segments.len());
         let _ = write_note(self, &s.note_path, &st, s.created, Some(elapsed), &s.transcriber.lock());
         if let Some(j) = st.journal.take() {
             let _ = j.finish();
@@ -350,7 +363,12 @@ impl Core {
     }
 }
 
-fn audio_loop(rx: Receiver<ln_audio::Tagged>, tx: Sender<Job>, stop: Arc<AtomicBool>, silero: Option<PathBuf>) {
+fn audio_loop(rx: Receiver<ln_audio::Tagged>, tx: Sender<Job>, stop: Arc<AtomicBool>, silero: Option<PathBuf>, core: &Arc<Core>) {
+    // Per channel: samples received and non-zero samples, to tell the user when a channel is mute.
+    let started = Instant::now();
+    let mut stats = [(0u64, 0u64, 0u32); 2];
+    let mut warned = [false; 2];
+    let mut last_log = Instant::now();
     let vad = |_: Channel| -> Box<dyn VoiceDetector> {
         #[cfg(feature = "whisper")]
         if let Some(p) = &silero
@@ -365,13 +383,51 @@ fn audio_loop(rx: Receiver<ln_audio::Tagged>, tx: Sender<Job>, stop: Arc<AtomicB
     loop {
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(t) => {
-                let s = &mut segs[if t.channel == Channel::Me { 0 } else { 1 }];
+                let i = if t.channel == Channel::Me { 0 } else { 1 };
+                stats[i].0 += t.chunk.samples.len() as u64;
+                stats[i].1 += t.chunk.samples.iter().filter(|x| **x != 0.0).count() as u64;
+                stats[i].2 = t.chunk.sample_rate;
+                let s = &mut segs[i];
                 for p in s.push(&t.chunk.samples, t.chunk.sample_rate) {
                     let _ = tx.send(Job::Section(p));
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             Err(_) => break,
+        }
+        if last_log.elapsed() > Duration::from_secs(10) {
+            last_log = Instant::now();
+            tracing::info!(
+                "audio: me {} samples ({} non-zero) @{} Hz, others {} samples ({} non-zero) @{} Hz",
+                stats[0].0,
+                stats[0].1,
+                stats[0].2,
+                stats[1].0,
+                stats[1].1,
+                stats[1].2
+            );
+        }
+        // The microphone must deliver sound within 6 s; pure digital silence means no permission
+        // or a muted device. (System audio may legitimately be silent: nobody talking yet.)
+        if !warned[0] && started.elapsed() > Duration::from_secs(6) && stats[0].1 == 0 {
+            warned[0] = true;
+            tracing::warn!("microphone: {} samples, all zero", stats[0].0);
+            let ui = core.ui_language();
+            core.emit(crate::CoreEvent::Notice(tr(
+                ui,
+                "Vom Mikrofon kommt kein Ton. Prüfe das Eingabegerät und die Berechtigung (Systemeinstellungen → Datenschutz & Sicherheit → Mikrofon).",
+                "No sound from the microphone. Check the input device and the permission (System Settings → Privacy & Security → Microphone).",
+            )));
+        }
+        if !warned[1] && started.elapsed() > Duration::from_secs(20) && stats[1].1 == 0 {
+            warned[1] = true;
+            tracing::warn!("system audio: {} samples, all zero", stats[1].0);
+            let ui = core.ui_language();
+            core.emit(crate::CoreEvent::Notice(tr(
+                ui,
+                "Noch kein Ton vom System (Call, Video). Falls etwas läuft: erlaube Live Notes unter Systemeinstellungen → Datenschutz & Sicherheit → Bildschirm- & Systemaudioaufnahme.",
+                "No system sound yet (call, video). If something is playing, allow Live Notes in System Settings → Privacy & Security → Screen & System Audio Recording.",
+            )));
         }
         if stop.load(Ordering::Relaxed) {
             // Drain what is still queued, then close open sections.

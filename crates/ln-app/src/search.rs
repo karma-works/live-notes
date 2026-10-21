@@ -183,6 +183,10 @@ impl Render for SearchPanel {
 
 #[cfg(feature = "screenshots")]
 impl SearchPanel {
+    pub(crate) fn hit_count(&self) -> usize {
+        self.hits.len()
+    }
+
     pub(crate) fn set_query(&mut self, q: &str, window: &mut Window, cx: &mut Context<Self>) {
         let q = q.to_string();
         self.input.update(cx, |i, cx| i.set_value(q.clone(), window, cx));

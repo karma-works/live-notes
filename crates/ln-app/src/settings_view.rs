@@ -22,6 +22,8 @@ pub struct SettingsView {
     assistant_model: Entity<InputState>,
     limit: Entity<InputState>,
     tested: HashMap<String, Result<(), String>>,
+    probe: Option<ln_core::ProbeReport>,
+    probing: bool,
 }
 
 const EXTRA_LANGS: [&str; 6] = ["it", "pt", "nl", "ja", "ko", "ru"];
@@ -33,7 +35,82 @@ impl SettingsView {
         let openrouter_key = cx.new(|cx| InputState::new(window, cx).placeholder("sk-or-…").masked(true));
         let assistant_model = cx.new(|cx| InputState::new(window, cx).default_value(s.roles.assistant.model.clone()));
         let limit = cx.new(|cx| InputState::new(window, cx).default_value(format!("{:.2}", s.costs.monthly_limit_usd)));
-        SettingsView { core, openai_key, openrouter_key, assistant_model, limit, tested: HashMap::new() }
+        SettingsView { core, openai_key, openrouter_key, assistant_model, limit, tested: HashMap::new(), probe: None, probing: false }
+    }
+
+    fn run_probe(&mut self, cx: &mut Context<Self>) {
+        if self.probing {
+            return;
+        }
+        self.probing = true;
+        cx.notify();
+        let core = self.core.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let report = cx.background_spawn(async move { core.probe_capture(5, true) }).await;
+            let _ = this.update(cx, |v, cx| {
+                v.probing = false;
+                v.probe = Some(report);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_probe(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let mut sec = Self::section(t("recording-section"), cx)
+            .child(div().text_xs().text_color(theme.muted_foreground).child(t("test-recording-hint")))
+            .child(
+                h_flex().child(
+                    Button::new("probe")
+                        .small()
+                        .label(if self.probing { t("test-running") } else { t("test-recording") })
+                        .loading(self.probing)
+                        .on_click(cx.listener(|this, _, _, cx| this.run_probe(cx))),
+                ),
+            );
+        if let Some(r) = &self.probe {
+            for c in &r.channels {
+                let name = if c.channel == "me" {
+                    ln_types::Channel::Me.label(crate::i18n::language())
+                } else {
+                    ln_types::Channel::Others.label(crate::i18n::language())
+                };
+                let (status, color) = if !c.started || c.sample_rate == 0 {
+                    (t("probe-failed").to_string(), theme.danger)
+                } else if c.nonzero == 0.0 {
+                    (t("probe-silent").to_string(), theme.warning)
+                } else if c.sections > 0 {
+                    (format!("{} · {}", t("probe-ok"), t("probe-speech")), theme.success)
+                } else {
+                    (t("probe-ok").to_string(), theme.success)
+                };
+                let level = (c.rms / 0.1).clamp(0.0, 1.0);
+                let mut row = v_flex().gap_1().child(
+                    h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .child(div().w(px(70.)).child(name))
+                        .child(
+                            div()
+                                .w(px(80.))
+                                .h(px(4.))
+                                .rounded_full()
+                                .bg(theme.muted)
+                                .child(div().h_full().rounded_full().bg(color).w(relative(level))),
+                        )
+                        .child(div().text_xs().text_color(color).child(status)),
+                );
+                if let Some((lang, text)) = c.transcript.first() {
+                    row = row.child(div().text_xs().text_color(theme.muted_foreground).child(format!("{lang}: {text}")));
+                }
+                if let Some(e) = &c.error {
+                    row = row.child(div().text_xs().text_color(theme.muted_foreground).child(e.clone()));
+                }
+                sec = sec.child(row);
+            }
+        }
+        sec
     }
 
     pub fn provider_tested(&mut self, provider: &str, result: Result<(), String>, cx: &mut Context<Self>) {
@@ -375,6 +452,7 @@ impl Render for SettingsView {
                 .gap_4()
                 .max_w(px(600.))
                 .child(general)
+                .child(self.render_probe(cx))
                 .child(transcription)
                 .child(languages)
                 .child(assistant)

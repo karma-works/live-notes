@@ -24,5 +24,16 @@ def rd(n):
 sil = b"\x00\x00" * 16000
 out = sil + rd("de.wav") + sil + rd("zh.wav") + sil + rd("fr.wav") + sil + rd("en.wav") + sil + rd("es.wav") + sil
 w = wave.open("mixed.wav", "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(out); w.close()
+# Two-channel conversation for the verification tour: "me" speaks de/en, "others" zh/fr/es.
+def silence(s): return b"\x00\x00" * int(16000 * s)
+L = lambda b: len(b) / 32000
+de, en, zh, fr, es = [rd(f + ".wav") for f in ["de", "en", "zh", "fr", "es"]]
+me = silence(1.0) + de; others = silence(1.0 + L(de) + 0.8) + zh
+me += silence(L(others) - L(me) + 0.8) + en
+others += silence(L(me) - L(others) + 0.8) + fr
+others += silence(1.0) + es
+me += silence(L(others) - L(me) + 1.5); others += silence(1.5)
+for name, data in [("demo-me.wav", me), ("demo-others.wav", others)]:
+    w = wave.open(name, "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(data); w.close()
 PY
 echo "Corpus in $OUT"

@@ -2,6 +2,11 @@
 //!
 //! Steps: global stereo tap excluding our own process → private aggregate device that
 //! contains the default output device and the tap → IO block receives the tapped audio.
+//!
+//! The aggregate is bound to the output device. When that changes – headphones plugged in, or a
+//! Bluetooth headset switching to its 16 kHz call profile because a microphone opened – the old
+//! aggregate only delivers silence. A watcher rebuilds tap and aggregate when the default output
+//! device or its sample rate changes.
 
 use crate::{AudioChunk, CaptureStream, Error, Result};
 use crossbeam_channel::Sender;
@@ -11,30 +16,32 @@ use objc2_core_audio::*;
 use objc2_core_audio_types::{AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp};
 use objc2_core_foundation::{CFDictionary, CFString};
 use objc2_foundation::{NSArray, NSDictionary, NSMutableDictionary, NSNumber, NSObject, NSString, NSUUID};
+use parking_lot::Mutex;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 /// The IO callback: (now, input data, input time, output data, output time).
 type IoBlock = block2::RcBlock<
     dyn Fn(NonNull<AudioTimeStamp>, NonNull<AudioBufferList>, NonNull<AudioTimeStamp>, NonNull<AudioBufferList>, NonNull<AudioTimeStamp>),
 >;
 
-struct TapStream {
+/// One tap + aggregate device + IO proc, bound to one output device configuration.
+struct Session {
     tap: AudioObjectID,
     aggregate: AudioObjectID,
     proc_id: AudioDeviceIOProcID,
     _block: IoBlock,
-    running: bool,
+    device: (AudioObjectID, u32),
 }
 
-unsafe impl Send for TapStream {}
+// Only touched under the mutex; Core Audio objects are thread-agnostic.
+unsafe impl Send for Session {}
 
-impl CaptureStream for TapStream {
-    fn stop(&mut self) {
-        if !self.running {
-            return;
-        }
-        self.running = false;
+impl Session {
+    fn close(self) {
         unsafe {
             AudioDeviceStop(self.aggregate, self.proc_id);
             AudioDeviceDestroyIOProcID(self.aggregate, self.proc_id);
@@ -44,10 +51,74 @@ impl CaptureStream for TapStream {
     }
 }
 
+struct TapStream {
+    session: Arc<Mutex<Option<Session>>>,
+    stop: Arc<AtomicBool>,
+    watcher: Option<std::thread::JoinHandle<()>>,
+}
+
+impl CaptureStream for TapStream {
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(w) = self.watcher.take() {
+            let _ = w.join();
+        }
+        if let Some(s) = self.session.lock().take() {
+            s.close();
+        }
+    }
+}
+
 impl Drop for TapStream {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Default output device and its nominal sample rate.
+fn output_device() -> Option<(AudioObjectID, u32)> {
+    unsafe {
+        let dev: AudioObjectID =
+            get_property(kAudioObjectSystemObject as AudioObjectID, kAudioHardwarePropertyDefaultOutputDevice, None).ok()?;
+        let rate: f64 = get_property(dev, kAudioDevicePropertyNominalSampleRate, None).unwrap_or(0.0);
+        Some((dev, rate as u32))
+    }
+}
+
+pub fn start(tx: Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
+    let first = open(tx.clone())?;
+    tracing::info!("system audio tap started on output device {:?}", first.device);
+    let session = Arc::new(Mutex::new(Some(first)));
+    let stop = Arc::new(AtomicBool::new(false));
+    let watcher = {
+        let session = session.clone();
+        let stop = stop.clone();
+        std::thread::Builder::new()
+            .name("ln-tap-watch".into())
+            .spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(500));
+                    let Some(now) = output_device() else { continue };
+                    let current = session.lock().as_ref().map(|s| s.device);
+                    if current == Some(now) || stop.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    tracing::info!("output device changed {current:?} → {now:?}: rebuilding system audio tap");
+                    // Let the device finish switching (Bluetooth profile changes take a moment).
+                    std::thread::sleep(Duration::from_millis(700));
+                    let mut g = session.lock();
+                    if let Some(old) = g.take() {
+                        old.close();
+                    }
+                    match open(tx.clone()) {
+                        Ok(s) => *g = Some(s),
+                        Err(e) => tracing::warn!("rebuilding system audio tap failed: {e}"),
+                    }
+                }
+            })
+            .ok()
+    };
+    Ok(Box::new(TapStream { session, stop, watcher }))
 }
 
 fn check(what: &'static str, status: i32) -> Result<()> {
@@ -90,8 +161,9 @@ unsafe fn get_string(obj: AudioObjectID, selector: u32) -> Result<String> {
     Ok(s)
 }
 
-pub fn start(tx: Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
+fn open(tx: Sender<AudioChunk>) -> Result<Session> {
     unsafe {
+        let device = output_device().unwrap_or((0, 0));
         // Exclude our own process so app sounds never end up in the transcript.
         let pid = std::process::id() as i32;
         let own: AudioObjectID = get_property(
@@ -122,7 +194,7 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
         };
 
         let out_dev: AudioObjectID =
-            get_property(kAudioObjectSystemObject as AudioObjectID, kAudioHardwarePropertyDefaultSystemOutputDevice, None)?;
+            get_property(kAudioObjectSystemObject as AudioObjectID, kAudioHardwarePropertyDefaultOutputDevice, None)?;
         let out_uid = get_string(out_dev, kAudioDevicePropertyDeviceUID)?;
         let tap_uid = uuid.UUIDString().to_string();
         let agg_uid = NSUUID::new().UUIDString().to_string();
@@ -156,9 +228,11 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
             return Err(e);
         }
 
-        let rate = format.mSampleRate as u32;
-        let channels = format.mChannelsPerFrame.max(1) as usize;
-        let interleaved = format.mFormatFlags & objc2_core_audio_types::kAudioFormatFlagIsNonInterleaved == 0;
+        // The real rate is the aggregate's (a Bluetooth headset in call mode runs at 16 kHz while
+        // the tap still reports 48 kHz). Channel layout is read from each buffer, not the format.
+        let agg_rate: f64 = get_property(aggregate, kAudioDevicePropertyNominalSampleRate, None).unwrap_or(0.0);
+        let rate = if agg_rate > 0.0 { agg_rate as u32 } else { format.mSampleRate as u32 };
+        tracing::info!("system audio: tap format {} Hz × {} ch, aggregate {} Hz", format.mSampleRate, format.mChannelsPerFrame, agg_rate);
         let block = block2::RcBlock::new(
             move |_now: NonNull<AudioTimeStamp>,
                   input: NonNull<AudioBufferList>,
@@ -167,29 +241,36 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
                   _ot: NonNull<AudioTimeStamp>| {
                 let list = input.as_ref();
                 let n = list.mNumberBuffers as usize;
+                if n == 0 {
+                    return;
+                }
                 let bufs = std::slice::from_raw_parts(list.mBuffers.as_ptr(), n);
-                let mono: Vec<f32> = if interleaved && n >= 1 {
-                    let b = &bufs[0];
-                    let total = b.mDataByteSize as usize / 4;
-                    let data = std::slice::from_raw_parts(b.mData as *const f32, total);
-                    data.chunks(channels).map(|f| f.iter().sum::<f32>() / f.len() as f32).collect()
-                } else if n >= 1 {
-                    let frames = bufs[0].mDataByteSize as usize / 4;
-                    let mut acc = vec![0.0f32; frames];
-                    for b in bufs {
-                        let d = std::slice::from_raw_parts(b.mData as *const f32, (b.mDataByteSize as usize / 4).min(frames));
-                        for (a, x) in acc.iter_mut().zip(d) {
-                            *a += *x;
+                // Frames per buffer = bytes / 4 / channels-in-that-buffer; all buffers carry the
+                // same number of frames. Mix every channel of every buffer down to mono.
+                let frames = bufs.iter().map(|b| b.mDataByteSize as usize / 4 / (b.mNumberChannels.max(1) as usize)).min().unwrap_or(0);
+                if frames == 0 {
+                    return;
+                }
+                let mut acc = vec![0.0f32; frames];
+                let mut total_ch = 0usize;
+                for b in bufs {
+                    let ch = b.mNumberChannels.max(1) as usize;
+                    if b.mData.is_null() {
+                        continue;
+                    }
+                    let d = std::slice::from_raw_parts(b.mData as *const f32, frames * ch);
+                    for (i, a) in acc.iter_mut().enumerate() {
+                        for c in 0..ch {
+                            *a += d[i * ch + c];
                         }
                     }
-                    acc.iter_mut().for_each(|a| *a /= n as f32);
-                    acc
-                } else {
-                    return;
-                };
-                if !mono.is_empty() {
-                    let _ = tx.try_send(AudioChunk { samples: mono, sample_rate: rate });
+                    total_ch += ch;
                 }
+                if total_ch == 0 {
+                    return;
+                }
+                acc.iter_mut().for_each(|a| *a /= total_ch as f32);
+                let _ = tx.try_send(AudioChunk { samples: acc, sample_rate: rate });
             },
         );
         let mut proc_id: AudioDeviceIOProcID = None;
@@ -205,6 +286,6 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
             AudioHardwareDestroyProcessTap(tap);
             return Err(e);
         }
-        Ok(Box::new(TapStream { tap, aggregate, proc_id, _block: block, running: true }))
+        Ok(Session { tap, aggregate, proc_id, _block: block, device })
     }
 }

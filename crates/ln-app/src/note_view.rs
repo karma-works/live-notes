@@ -85,6 +85,11 @@ impl NoteView {
         v
     }
 
+    #[cfg(feature = "screenshots")]
+    pub fn is_editing(&self) -> bool {
+        self.mode == Mode::Edit
+    }
+
     pub fn path(&self) -> &Path {
         &self.file.path
     }

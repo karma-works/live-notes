@@ -36,6 +36,14 @@ impl UiLanguage {
                 return Self::from_locale(&v);
             }
         }
+        // Apps started from the Finder get no LANG: ask macOS for the preferred languages.
+        #[cfg(target_os = "macos")]
+        if let Ok(out) = std::process::Command::new("defaults").args(["read", "-g", "AppleLanguages"]).output()
+            && let Some(first) =
+                String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().trim_matches(['"', ',', '(', ')'])).find(|l| !l.is_empty())
+        {
+            return Self::from_locale(first);
+        }
         UiLanguage::En
     }
 

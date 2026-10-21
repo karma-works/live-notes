@@ -22,17 +22,33 @@ use std::sync::Arc;
 actions!(live_notes, [Quit, NewNote, ToggleRecording, OpenSearch, ToggleEdit, OpenSettings, ToggleSidebar, CloseWindow, ShowSources]);
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()))
-        .init();
     let paths = ln_types::AppPaths::from_env();
+    init_logging(&paths);
+    let args: Vec<String> = std::env::args().collect();
     let (core, events) = match Core::start(paths, Arc::new(ln_platform::KeychainStore)) {
         Ok(x) => x,
         Err(e) => {
+            tracing::error!("start failed: {e}");
             eprintln!("Live Notes could not start: {e}");
             std::process::exit(1);
         }
     };
+    // Headless audio self-test (verification skill): `--probe-capture SECS --report PATH`.
+    if let Some(i) = args.iter().position(|a| a == "--probe-capture") {
+        let secs = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(6);
+        let report = core.probe_capture(secs, !args.iter().any(|a| a == "--no-transcribe"));
+        let json = serde_json::to_string_pretty(&report).unwrap_or_default();
+        match args.iter().position(|a| a == "--report").and_then(|j| args.get(j + 1)) {
+            Some(path) => {
+                let _ = std::fs::write(path, &json);
+            }
+            None => println!("{json}"),
+        }
+        tracing::info!("probe: {json}");
+        core.shutdown();
+        std::process::exit(0);
+    }
+    tracing::info!("Live Notes {} started, ui={:?}", env!("CARGO_PKG_VERSION"), core.ui_language());
     i18n::set_language(core.ui_language());
     core.resume_downloads();
 
@@ -83,10 +99,47 @@ fn main() {
             cx.new(|cx| app::AppView::new(core2.clone(), ev, window, cx))
         })
         .expect("failed to open window");
+        // Fallbacks: menu commands and shortcuts reach the main view even when no element in it has
+        // the keyboard focus (e.g. right after the first-run screen or with the window in back).
+        macro_rules! fallback {
+            ($action:ty, $body:expr) => {{
+                let view = _view.clone();
+                cx.on_action(move |_: &$action, cx: &mut App| {
+                    tracing::info!("fallback action {}", stringify!($action));
+                    let view = view.clone();
+                    // Actions are dispatched inside a window update; run after it finishes.
+                    cx.defer(move |cx| {
+                        let _ = _handle.update(cx, |_, window, cx| {
+                            window.activate_window();
+                            view.update(cx, |v, cx| $body(v, window, cx))
+                        });
+                    });
+                });
+            }};
+        }
+        fallback!(OpenSettings, |v: &mut app::AppView, _w: &mut Window, cx: &mut Context<app::AppView>| v.open_settings(cx));
+        fallback!(OpenSearch, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.open_search(w, cx));
+        fallback!(NewNote, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.new_note(w, cx));
+        fallback!(ToggleRecording, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.toggle_recording(w, cx));
+        fallback!(ShowSources, |v: &mut app::AppView, _w: &mut Window, cx: &mut Context<app::AppView>| v.show_sources(cx));
         hotkey::install(_handle, _view.clone(), cx);
         tray::install(core.clone(), _handle, _view.clone(), cx);
         #[cfg(feature = "screenshots")]
         tour::run(core.clone(), _handle, _view, cx);
         cx.activate(true);
     });
+}
+
+/// Logs to `~/Library/Logs/Live Notes/live-notes.log` (and stderr). No transcript content is logged.
+fn init_logging(paths: &ln_types::AppPaths) {
+    use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+    let _ = std::fs::create_dir_all(&paths.logs_dir);
+    let filter = EnvFilter::try_from_env("LN_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("warn,live_notes=info,ln_core=info,ln_audio=info,ln_platform=info,ln_asr=info"));
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(paths.logs_dir.join("live-notes.log")).ok();
+    let registry = tracing_subscriber::registry().with(filter).with(fmt::layer().with_writer(std::io::stderr));
+    match file {
+        Some(f) => registry.with(fmt::layer().with_ansi(false).with_writer(std::sync::Mutex::new(f))).init(),
+        None => registry.init(),
+    }
 }

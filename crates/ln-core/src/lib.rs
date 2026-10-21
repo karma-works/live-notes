@@ -7,6 +7,7 @@ mod events;
 mod indexer;
 mod models;
 mod notes;
+mod probe;
 mod recording;
 mod suggest;
 mod summary;
@@ -18,6 +19,18 @@ pub use ln_audio::{CaptureConfig, Source};
 pub use ln_index::{SearchFilter, SearchHit, SourceRow};
 pub use models::{AssistantChoice, ModelStatus};
 pub use notes::NoteEntry;
+
+/// A setup step that is still open (shown as a checklist in the sidebar).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetupStep {
+    ModelsDownloading,
+    TranscriptionModelMissing,
+    MicrophoneDenied,
+    /// Provider name.
+    AssistantKeyMissing(String),
+    LlamaServerMissing,
+}
+pub use probe::{ChannelProbe, ProbeReport};
 pub use recording::RecordingInfo;
 pub use suggest::SuggestionCard;
 
@@ -227,6 +240,33 @@ impl Core {
             }
         }
         self.indexer.resync_all();
+    }
+
+    // ---- setup guidance (SPEC §6.1 rule 6) ------------------------------------------------
+
+    /// What is still missing before every feature works, in the order the user should fix it.
+    pub fn setup_steps(&self) -> Vec<SetupStep> {
+        let mut v = Vec::new();
+        if self.model_status().iter().any(|m| m.progress.is_some()) {
+            v.push(SetupStep::ModelsDownloading);
+        }
+        if !self.model_installed(&self.settings().transcription.local_model)
+            && self.settings().transcription.mode == ln_types::TranscriptionMode::Local
+        {
+            v.push(SetupStep::TranscriptionModelMissing);
+        }
+        if ln_platform::microphone_permission() == ln_platform::Permission::Denied {
+            v.push(SetupStep::MicrophoneDenied);
+        }
+        if !self.assistant_ready() {
+            let s = self.settings();
+            let name = s.provider(&s.roles.assistant.provider).map(|p| p.name.clone()).unwrap_or_default();
+            v.push(SetupStep::AssistantKeyMissing(name));
+        }
+        if ln_models::find_llama_server().is_none() {
+            v.push(SetupStep::LlamaServerMissing);
+        }
+        v
     }
 
     // ---- misc ----------------------------------------------------------------------------

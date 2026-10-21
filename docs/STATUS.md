@@ -1,13 +1,27 @@
 # Status v1.0 (Stand 2026-10-21)
 
-Kurzfassung: Alle Funktionen des ersten Durchlaufs (SPEC §16) sind umgesetzt, kompilieren ohne
-Warnungen und sind mit Tests oder echten Modellen geprüft. **Nicht prüfen konnte der Agent die
-echte Aufnahme über Mikrofon und System-Audio** – das ist die Abnahme durch den Projektinhaber.
+Kurzfassung: Alle Funktionen des ersten Durchlaufs (SPEC §16) sind umgesetzt. Seit 2026-10-21
+nachmittags prüft der Skill `verify` (`scripts/verify.sh`) die App auch mit **echtem Mikrofon und
+System-Audio** und bedient sie wie ein Nutzer (Menübefehle, Kürzel). Offen bleibt die Bewertung
+von Zusammenfassung und Live-Antworten mit echtem Gemma (kein Schlüssel vorhanden).
+
+## Fehler aus dem ersten Praxistest (behoben, mit Prüfung)
+
+| Symptom | Ursache | Prüfung |
+|---|---|---|
+| Leeres Transkript | Mikrofon lieferte keine Puffer (AVAudioEngine ohne verbundenen Ausgang; Bluetooth-Headset stoppt die Engine beim Profilwechsel) | `probe`, `real` |
+| System-Audio mal still, mal leise | Abgriff am „System-Ausgabegerät“ (virtuelles Proxy-Gerät) statt am Ausgabegerät; Voice-Processing senkte anderen Ton ab; falsche Abtastrate/Kanalzahl (48 kHz gemeldet, 16 kHz tatsächlich) | `probe` (Dauer und Transkript stimmen) |
+| Kein Weg zum OpenRouter-Schlüssel | Nach dem Erststart fehlte der Fokus: Menübefehle und Kürzel (⌘, ⌘K ⌘N ⌘E) kamen nicht an | `tour`: `menu_opens_settings`, `shortcut_toggles_editor` |
+| Kein Hinweis auf fehlende Schritte | Es gab keine Führung | Checkliste „Noch einrichten“ in der Seitenleiste, Zahnrad für Einstellungen, Hinweise bei stummem Kanal und leerer Aufnahme; `tour`: `setup_lists_missing_key` |
+| Keine Diagnose möglich | Kein Logfile | `~/Library/Logs/Live Notes/live-notes.log`; „Aufnahme testen“ in den Einstellungen; `live-notes --probe-capture` |
 
 ## Prüfstand
 
 | Prüfung | Ergebnis |
 |---|---|
+| `scripts/verify.sh quick` | 58 Tests grün, Clippy und fmt sauber, `cargo deny` ok |
+| `scripts/verify.sh tour` | 8 Prüfungen der echten App grün (Erststart, Menübefehle, Kürzel, Checkliste, Suche, Aufnahme aus Dateien in 5 Sprachen, Transkript in der Notiz) |
+| `scripts/verify.sh real` | zusätzlich echte Aufnahme: startet per ⌥⌘R-Aktion, System-Audio wird transkribiert, Mikrofon liefert durchgehend Ton |
 | `cargo test --workspace` | 58 Tests grün |
 | `cargo clippy --workspace --all-targets -- -D warnings` | keine Befunde (auch mit `--features screenshots`) |
 | `cargo fmt --check` | sauber |
@@ -20,7 +34,7 @@ echte Aufnahme über Mikrofon und System-Audio** – das ist die Abnahme durch d
 
 | | Funktion | Stand | Geprüft durch |
 |---|---|---|---|
-| F1 | Aufnahme zwei Kanäle, kein Rohaudio, 10-min-Ringpuffer, Journal, Wiederherstellung | umgesetzt | Tests mit Audiodateien; **Mikrofon (AVAudioEngine + Echo-Unterdrückung) und System-Audio (Process Tap) nur kompiliert, nicht live getestet** |
+| F1 | Aufnahme zwei Kanäle, kein Rohaudio, 10-min-Ringpuffer, Journal, Wiederherstellung | umgesetzt | Tests mit Audiodateien; `probe`/`real` mit echtem Mikrofon (Bluetooth-Headset) und System-Audio. Echo-Unterdrückung startet auf dem Headset im zweiten Versuch; ob sie bei Lautsprecherbetrieb das Gegenüber zuverlässig aus „Ich“ heraushält, ist nicht geprüft |
 | F2 | Sprachrichtige Transkription: VAD (Silero), Spracherkennung (Whisper base) innerhalb „Meine Sprachen“, Whisper large-v3-turbo, OpenCC, Halluzinationsfilter, Sprachkorrektur | umgesetzt | Tests + echte Modelle |
 | F2 | OpenAI „günstig“ (`gpt-transcribe`) mit Rückfall auf lokal | umgesetzt | gegen Nachbau-Server; **nicht gegen die echte OpenAI-API** |
 | F2 | OpenAI „live“ (`gpt-live-transcribe`, Realtime-API) | v1.1 – der Modus nutzt bis dahin denselben REST-Weg wie „günstig“ | – |
@@ -73,6 +87,10 @@ echte Aufnahme über Mikrofon und System-Audio** – das ist die Abnahme durch d
 4. Berechtigungsdialoge für Mikrofon und System-Audio prüfen.
 5. Qualität von Zusammenfassung und Live-Vorschlägen mit echtem Gemma bewerten.
 6. Optional: OpenAI-Schlüssel eintragen und „OpenAI günstig“ testen.
+
+## Entwicklungsschleife
+
+Skill `.claude/skills/verify/SKILL.md`, Befehl `scripts/verify.sh quick|tour|probe|real|bench|all`.
 
 ## Wichtige Befehle
 

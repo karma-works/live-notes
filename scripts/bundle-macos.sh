@@ -12,10 +12,19 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 APP="dist/Live Notes.app"
-cargo build --release -p ln-app
+# LN_PROFILE=dev builds a quick debug bundle for the development loop.
+PROFILE="${LN_PROFILE:-release}"
+# LN_FEATURES=screenshots adds the verification tour.
+FEATURES=()
+if [[ -n "${LN_FEATURES:-}" ]]; then FEATURES=(--features "$LN_FEATURES"); fi
+if [[ "$PROFILE" == "dev" ]]; then
+  cargo build -p ln-app "${FEATURES[@]}"; BIN=target/debug/live-notes
+else
+  cargo build --release -p ln-app "${FEATURES[@]}"; BIN=target/release/live-notes
+fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin"
-cp target/release/live-notes "$APP/Contents/MacOS/live-notes"
+cp "$BIN" "$APP/Contents/MacOS/live-notes"
 sed "s/__VERSION__/$VERSION/g" packaging/Info.plist > "$APP/Contents/Info.plist"
 if [[ -n "${LN_LLAMA_SERVER:-}" ]]; then
   cp "$LN_LLAMA_SERVER" "$APP/Contents/Resources/bin/llama-server"
@@ -23,4 +32,4 @@ fi
 IDENTITY="${LN_SIGN_IDENTITY:--}"
 codesign --force --deep --options runtime --entitlements packaging/entitlements.plist --sign "$IDENTITY" "$APP"
 codesign --verify --strict "$APP"
-echo "Built $APP ($VERSION), signed with: $IDENTITY"
+echo "Built $APP ($VERSION, $PROFILE), signed with: $IDENTITY"

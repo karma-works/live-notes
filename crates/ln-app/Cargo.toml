@@ -30,6 +30,7 @@ gpui-kit = { version = "0.8", features = [
     "tree-sitter-bash",
 ] }
 futures.workspace = true
+serde_json.workspace = true
 parking_lot.workspace = true
 chrono.workspace = true
 tracing.workspace = true

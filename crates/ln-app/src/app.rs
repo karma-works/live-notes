@@ -41,6 +41,7 @@ pub struct AppView {
     sources: Option<Entity<SourcesView>>,
     settings: Option<WeakEntity<crate::settings_view::SettingsView>>,
     download: Option<f32>,
+    starting: bool,
     sidebar_open: bool,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
@@ -54,9 +55,12 @@ impl AppView {
             None
         } else {
             let fr = cx.new(|cx| FirstRunView::new(core.clone(), window, cx));
-            subs.push(cx.subscribe_in(&fr, window, |this, _, ev: &FirstRunEvent, _w, cx| {
+            subs.push(cx.subscribe_in(&fr, window, |this, _, ev: &FirstRunEvent, window, cx| {
                 let FirstRunEvent::Done = ev;
                 this.first_run = None;
+                // The first-run screen had the focus; without this, menu commands and shortcuts
+                // would not reach the main view.
+                window.focus(&this.focus, cx);
                 cx.notify();
             }));
             Some(fr)
@@ -94,6 +98,7 @@ impl AppView {
             sources: None,
             settings: None,
             download: None,
+            starting: false,
             sidebar_open: true,
             focus: cx.focus_handle(),
             _subs: subs,
@@ -262,19 +267,71 @@ impl AppView {
     }
 
     pub(crate) fn start_recording_with(&mut self, capture: Option<ln_core::CaptureConfig>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.starting {
+            return;
+        }
         if let Some(n) = &self.note {
             n.update(cx, |n, cx| n.save_now(cx));
         }
-        match self.core.start_recording(capture) {
-            Ok(path) => {
-                let core = self.core.clone();
-                self.recording = Some(cx.new(|cx| RecordingView::new(core, path, window, cx)));
-                self.selected = Selected::Recording;
-                self.reload_notes(cx);
+        // Microphone permission first (only for real devices).
+        if capture.is_none() {
+            match ln_platform::microphone_permission() {
+                ln_platform::Permission::Denied => {
+                    window.open_alert_dialog(cx, |alert, _, _| {
+                        alert
+                            .title(t("mic-denied-title"))
+                            .description(t("mic-denied-body"))
+                            .confirm()
+                            .ok_text(t("open-system-settings"))
+                            .cancel_text(t("cancel"))
+                            .on_ok(|_, _, cx| {
+                                cx.open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
+                                true
+                            })
+                    });
+                    return;
+                }
+                ln_platform::Permission::NotDetermined => {
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    let tx = parking_lot::Mutex::new(Some(tx));
+                    ln_platform::request_microphone_permission(move |ok| {
+                        if let Some(tx) = tx.lock().take() {
+                            let _ = tx.send(ok);
+                        }
+                    });
+                    cx.spawn_in(window, async move |this, cx| {
+                        let granted = rx.await.unwrap_or(false);
+                        // Denied → the next call shows the "not allowed" dialog.
+                        let _ = granted;
+                        let _ = this.update_in(cx, |v, window, cx| v.start_recording_with(None, window, cx));
+                    })
+                    .detach();
+                    return;
+                }
+                ln_platform::Permission::Granted => {}
             }
-            Err(e) => window.push_notification(e.to_string(), cx),
         }
+        // Loading Whisper and opening the devices takes a moment: do it off the UI thread.
+        self.starting = true;
         cx.notify();
+        let core = self.core.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_spawn(async move { core.start_recording(capture) }).await;
+            let _ = this.update_in(cx, |v, window, cx| {
+                v.starting = false;
+                match result {
+                    Ok(path) => {
+                        let core = v.core.clone();
+                        v.recording = Some(cx.new(|cx| RecordingView::new(core, path, window, cx)));
+                        v.selected = Selected::Recording;
+                        v.reload_notes(cx);
+                    }
+                    Err(e) => window.push_notification(e.to_string(), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -356,6 +413,7 @@ impl AppView {
         }
         let record_label = match &recording {
             Some(r) => format!("● {}  {}", t("recording"), fmt_elapsed(r.elapsed)),
+            None if self.starting => t("starting").to_string(),
             None => t("record").to_string(),
         };
         let selected_sources = self.selected == Selected::Sources;
@@ -426,6 +484,7 @@ impl AppView {
                     .gap_1()
                     .border_t_1()
                     .border_color(theme.sidebar_border)
+                    .children(self.render_setup(cx))
                     .child(
                         h_flex()
                             .id("sources")
@@ -437,7 +496,15 @@ impl AppView {
                             .cursor_pointer()
                             .when(selected_sources, |d| d.bg(theme.sidebar_accent))
                             .child(gpui_kit::component::Icon::new(IconName::Folder).small())
-                            .child(t("sources"))
+                            .child(div().flex_1().child(t("sources")))
+                            .child(
+                                Button::new("settings")
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::Settings)
+                                    .tooltip(format!("{} ⌘,", t("settings")))
+                                    .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx))),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| this.show_sources(cx))),
                     )
                     .when_some(self.download, |el, f| {
@@ -454,6 +521,36 @@ impl AppView {
                         )
                     }),
             )
+    }
+
+    /// Open setup steps as a short checklist with one action each (SPEC §6.1 rule 6).
+    fn render_setup(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use ln_core::SetupStep::*;
+        let steps: Vec<_> = self.core.setup_steps().into_iter().filter(|s| *s != ModelsDownloading).collect();
+        if steps.is_empty() {
+            return None;
+        }
+        let theme = cx.theme().clone();
+        let mut col = v_flex().gap_1().p_2().mb_1().rounded_md().border_1().border_color(theme.border).bg(theme.background);
+        col = col.child(div().text_xs().font_semibold().child(t("setup")));
+        for (i, step) in steps.iter().enumerate() {
+            let (text, action): (String, Option<(&str, u8)>) = match step {
+                AssistantKeyMissing(p) => (format!("{} ({p})", t("setup-key")), Some((t("setup-key-action"), 0))),
+                MicrophoneDenied => (t("setup-mic").to_string(), Some((t("open-system-settings"), 1))),
+                TranscriptionModelMissing => (t("setup-model").to_string(), None),
+                LlamaServerMissing => (t("setup-llama").to_string(), None),
+                ModelsDownloading => continue,
+            };
+            let mut row = v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child(text));
+            if let Some((label, kind)) = action {
+                row = row.child(Button::new(("setup", i)).xsmall().label(label).on_click(cx.listener(move |this, _, _, cx| match kind {
+                    0 => this.open_settings(cx),
+                    _ => cx.open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"),
+                })));
+            }
+            col = col.child(row);
+        }
+        Some(col.into_any_element())
     }
 
     fn note_row(&self, n: &NoteEntry, cx: &mut Context<Self>) -> impl IntoElement {
@@ -569,7 +666,10 @@ impl Render for AppView {
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleRecording, window, cx| this.toggle_recording(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSearch, window, cx| this.open_search(window, cx)))
-            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
+            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
+                tracing::info!("view action OpenSettings");
+                this.open_settings(cx)
+            }))
             .on_action(cx.listener(|this, _: &ShowSources, _, cx| this.show_sources(cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.sidebar_open = !this.sidebar_open;
@@ -601,9 +701,8 @@ impl Render for AppView {
 
 #[cfg(feature = "screenshots")]
 impl AppView {
-    pub(crate) fn close_first_run(&mut self, cx: &mut Context<Self>) {
-        self.first_run = None;
-        cx.notify();
+    pub(crate) fn first_run_view(&self) -> Option<Entity<FirstRunView>> {
+        self.first_run.clone()
     }
     pub(crate) fn note_view(&self) -> Option<Entity<NoteView>> {
         self.note.clone()
