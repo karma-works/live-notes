@@ -4,10 +4,12 @@
 pub mod chatgpt;
 mod client;
 mod cost;
+mod decisions;
 pub mod prompts;
 mod types;
 
 pub use client::Client;
+pub use decisions::{Decisions, YesNo};
 
 /// HTTP client for the sign-in flow; ln-core may not depend on reqwest itself (deny.toml).
 pub type HttpClient = reqwest::Client;
@@ -19,7 +21,7 @@ pub fn http_client() -> HttpClient {
         .build()
         .expect("http client")
 }
-pub use cost::{CostTracker, UsageRecord, price_per_minute};
+pub use cost::{CostTracker, UsageRecord, price_per_minute, token_prices};
 pub use types::*;
 
 #[derive(Debug, thiserror::Error)]

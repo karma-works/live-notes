@@ -35,7 +35,7 @@ mod whisper {
 
     fn load_ctx(path: &std::path::Path) -> Result<(WhisperContext, WhisperState)> {
         let mut p = WhisperContextParameters::default();
-        p.use_gpu(true);
+        p.use_gpu(std::env::var("LN_WHISPER_CPU").is_err());
         p.flash_attn(true);
         let ctx = WhisperContext::new_with_params(path, p).map_err(|e| Error::Model(e.to_string()))?;
         let state = ctx.create_state().map_err(|e| Error::Model(e.to_string()))?;
@@ -54,15 +54,22 @@ mod whisper {
                 Some(p) => Some(load_ctx(p)?),
                 None => None,
             };
-            let threads = std::thread::available_parallelism().map(|n| n.get().clamp(1, 8)).unwrap_or(4);
+            let threads = perf_threads();
             Ok(WhisperTranscriber { _ctx: ctx, state, lid, model_name: model_name.into(), threads })
         }
     }
 
-    /// Encoder frames for a section: 50 per second plus a margin, at most the full 30 s.
-    fn audio_ctx(samples: usize) -> i32 {
-        let secs = samples as f32 / crate::RATE as f32;
-        ((((secs * 50.0).ceil() as u32 + 64).div_ceil(64) * 64).min(1500)) as i32
+    /// Threads for Whisper: the performance cores minus one, so the UI thread always gets a core
+    /// (all 8 cores of an M1 froze the window while sections were transcribed).
+    fn perf_threads() -> usize {
+        let perf = std::process::Command::new("sysctl")
+            .args(["-n", "hw.perflevel0.physicalcpu"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<usize>().ok());
+        let all = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        perf.unwrap_or(all / 2).saturating_sub(1).clamp(2, 8)
     }
 
     /// Whisper needs at least one second of audio.
@@ -111,7 +118,10 @@ mod whisper {
             p.set_suppress_nst(true);
             p.set_no_speech_thold(0.6);
             p.set_temperature(0.0);
-            p.set_audio_ctx(audio_ctx(pcm.len()));
+            // Full 30 s encoder window (the default). A window shortened to the section length was
+            // 3–4× faster, but made short sections loop or turn into gibberish (a 2.4 s Chinese
+            // sentence became mixed-script noise) and cost accuracy on Chinese; see
+            // target/test-corpus/hard and docs/STATUS.md.
             if !prompt.is_empty() {
                 p.set_initial_prompt(prompt);
             }

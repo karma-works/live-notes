@@ -25,6 +25,9 @@ pub struct FrontMatter {
     pub speakers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
+    /// The user's categories this note belongs to, set by the decision model or by hand.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
     /// Set when the user renamed the file; the app then never renames it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub manual_name: bool,
@@ -198,6 +201,48 @@ impl Note {
             return Some(t);
         }
         first_heading(&self.preamble)
+    }
+
+    pub fn categories(&self) -> Vec<String> {
+        self.front.as_ref().map(|f| f.categories.clone()).unwrap_or_default()
+    }
+
+    /// Sets the categories. A note without front matter only gets one when there is
+    /// something to store, so plain Markdown notes stay plain.
+    pub fn set_categories(&mut self, categories: Vec<String>) {
+        match self.front.as_mut() {
+            Some(f) => f.categories = categories,
+            None if categories.is_empty() => {}
+            None => self.front = Some(FrontMatter { categories, ..Default::default() }),
+        }
+    }
+
+    /// Renames the note as shown in the note list: the front-matter title if there is one,
+    /// otherwise the first `# ` heading (added at the top when missing).
+    pub fn set_title(&mut self, title: &str) {
+        let title = title.trim();
+        if let Some(f) = self.front.as_mut()
+            && (f.title.is_some() || f.id.is_some() || (first_heading(&self.preamble).is_none() && !self.sections.is_empty()))
+        {
+            f.title = Some(title.to_string());
+            f.manual_name = true;
+            return;
+        }
+        let mut done = false;
+        let mut out = String::with_capacity(self.preamble.len() + title.len() + 3);
+        for line in self.preamble.split_inclusive('\n') {
+            if !done && (line.trim_start().starts_with("# ") || line.trim_end() == "#") {
+                let nl = if line.ends_with('\n') { "\n" } else { "" };
+                out.push_str(&format!("# {title}{nl}"));
+                done = true;
+            } else {
+                out.push_str(line);
+            }
+        }
+        if !done {
+            out = format!("# {title}\n\n{}", self.preamble.trim_start_matches('\n'));
+        }
+        self.preamble = out;
     }
 
     pub fn speakers(&self) -> BTreeMap<String, String> {
@@ -374,6 +419,44 @@ mod tests {
         // Summary was inserted before the transcript.
         assert_eq!(back.sections.last().unwrap().kind, SectionKind::Transcript);
         assert!(back.section(&SectionKind::Summary).unwrap().body.starts_with("Kurz."));
+    }
+
+    #[test]
+    fn categories_only_add_front_matter_when_needed() {
+        let mut n = Note::parse("# Vokabeln\n\n- 你好\n").unwrap();
+        n.set_categories(vec![]);
+        assert_eq!(n.render(), "# Vokabeln\n\n- 你好\n");
+        n.set_categories(vec!["Chinesisch-Kurs".into()]);
+        let text = n.render();
+        assert!(text.starts_with("---\ncategories:\n- Chinesisch-Kurs\n---\n# Vokabeln\n"), "{text}");
+        let back = Note::parse(&text).unwrap();
+        assert_eq!(back.categories(), vec!["Chinesisch-Kurs".to_string()]);
+        assert_eq!(back.title().unwrap(), "Vokabeln");
+        let mut rec = Note::parse(SAMPLE).unwrap();
+        rec.set_categories(vec!["Arztagent".into(), "KI-Projekte".into()]);
+        assert_eq!(Note::parse(&rec.render()).unwrap().categories().len(), 2);
+    }
+
+    #[test]
+    fn set_title_on_manual_and_recording_notes() {
+        let mut n = Note::parse("Intro\n# Alt\n\nText\n").unwrap();
+        n.set_title("Neu");
+        assert_eq!(n.render(), "Intro\n# Neu\n\nText\n");
+        let mut empty = Note::parse("# \n").unwrap();
+        empty.set_title("Einkauf");
+        assert_eq!(empty.render(), "# Einkauf\n");
+        let mut plain = Note::parse("Nur Text\n").unwrap();
+        plain.set_title("Titel");
+        assert_eq!(plain.render(), "# Titel\n\nNur Text\n");
+        let mut tagged = Note::parse("---\ncategories:\n- A\n---\n# Alt\n").unwrap();
+        tagged.set_title("Neu");
+        assert!(tagged.render().ends_with("# Neu\n"));
+        assert!(tagged.front.as_ref().unwrap().title.is_none());
+        let mut rec = Note::parse(SAMPLE).unwrap();
+        rec.set_title("Budgetrunde mit Frau Li");
+        let back = Note::parse(&rec.render()).unwrap();
+        assert_eq!(back.title().unwrap(), "Budgetrunde mit Frau Li");
+        assert!(back.front.unwrap().manual_name);
     }
 
     #[test]

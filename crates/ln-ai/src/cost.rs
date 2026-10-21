@@ -30,12 +30,15 @@ pub fn price_per_minute(model: &str) -> Option<f64> {
 }
 
 /// Fallback token prices (USD per 1M tokens) when the provider does not report cost.
-fn token_prices(model: &str) -> Option<(f64, f64)> {
+pub fn token_prices(model: &str) -> Option<(f64, f64)> {
     match model {
         "google/gemma-4-26b-a4b-it" => Some((0.09, 0.30)),
         "google/gemma-4-31b-it" => Some((0.20, 0.40)),
         "google/gemini-2.5-flash-lite" => Some((0.10, 0.40)),
         "qwen/qwen3-embedding-4b" => Some((0.02, 0.0)),
+        // Decision models bill input only (OpenAI and OpenRouter pages, 2026-10-21).
+        "gpt-6-luna" | "openai/gpt-6-luna-decisions" => Some((0.10, 0.0)),
+        "typesafe/jev-1.14" | "typesafe/jev-1.13" | "~typesafe/jev-latest" => Some((0.042, 0.0)),
         _ => None,
     }
 }
@@ -100,6 +103,18 @@ impl CostTracker {
         use chrono::Datelike;
         let now = chrono::Utc::now();
         self.records.lock().iter().filter(|r| r.at.year() == now.year() && r.at.month() == now.month()).map(|r| r.usd).sum()
+    }
+
+    /// This month's cost for one purpose ("transcription", "summary", "suggestion", "answer").
+    pub fn month_purpose_total(&self, purpose: &str) -> f64 {
+        use chrono::Datelike;
+        let now = chrono::Utc::now();
+        self.records
+            .lock()
+            .iter()
+            .filter(|r| r.purpose == purpose && r.at.year() == now.year() && r.at.month() == now.month())
+            .map(|r| r.usd)
+            .sum()
     }
 
     pub fn note_total(&self, note_id: &str) -> f64 {

@@ -92,6 +92,13 @@ impl AsrEngine {
         AsrEngine { transcriber, post, allowed, forced_language: None, previous: HashMap::new(), context: HashMap::new() }
     }
 
+    /// Forgets language and prompt context: the next section belongs to another recording.
+    pub fn reset(&mut self) {
+        self.previous.clear();
+        self.context.clear();
+        self.forced_language = None;
+    }
+
     pub fn transcriber_name(&self) -> String {
         self.transcriber.name()
     }
@@ -122,6 +129,10 @@ impl AsrEngine {
             .unwrap_or_else(|| self.allowed.first().cloned().unwrap_or_else(|| Lang::new("en")));
         let conf = if conf == 0.0 { 1.0 } else { conf };
         let Some(text) = self.post.process(&text, &lang) else { return Ok(None) };
+        if !crate::post::plausible(&text, duration) {
+            tracing::warn!("dropped implausible transcript: {} characters for {} ms of audio", text.chars().count(), duration);
+            return Ok(None);
+        }
         self.previous.insert(seg.channel, lang.clone());
         let ctx = self.context.entry((seg.channel, lang.clone())).or_default();
         ctx.push(' ');

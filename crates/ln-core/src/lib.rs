@@ -3,11 +3,13 @@
 
 mod ai;
 mod ask;
+mod categories;
 mod chatgpt;
 mod events;
 mod indexer;
 mod models;
 mod notes;
+mod overview;
 mod probe;
 mod recording;
 mod suggest;
@@ -17,11 +19,13 @@ pub use ask::{AskScope, Citation};
 pub use chatgpt::ChatGptStatus;
 pub use events::{CoreEvent, EventReceiver};
 pub use ln_ai::chatgpt::USAGE_URL as CHATGPT_USAGE_URL;
+pub use ln_ai::price_per_minute;
 pub use ln_ai::prompts::Task;
 pub use ln_audio::{CaptureConfig, Source};
 pub use ln_index::{SearchFilter, SearchHit, SourceRow};
 pub use models::{AssistantChoice, ModelStatus};
 pub use notes::NoteEntry;
+pub use overview::{ModelUse, UseCost, UseState, UseTask};
 
 /// A setup step that is still open (shown as a checklist in the sidebar).
 #[derive(Debug, Clone, PartialEq)]
@@ -29,14 +33,17 @@ pub enum SetupStep {
     ModelsDownloading,
     TranscriptionModelMissing,
     MicrophoneDenied,
-    /// Provider name.
-    AssistantKeyMissing(String),
+    /// These roles use a provider whose API key is missing.
+    KeyMissing {
+        provider: String,
+        roles: Vec<ln_types::ChatRole>,
+    },
     /// A role uses the ChatGPT plan, but nobody is signed in (or plan usage was declined).
     ChatGptSignIn,
     LlamaServerMissing,
 }
 pub use probe::{ChannelProbe, ProbeReport};
-pub use recording::RecordingInfo;
+pub use recording::{Activity, RecordingInfo};
 pub use suggest::SuggestionCard;
 
 use events::EventSender;
@@ -74,7 +81,14 @@ pub struct Core {
     recording: Mutex<Option<recording::Session>>,
     /// Suggestions for the user's own notes, not yet accepted (kept out of the file).
     additions: Mutex<std::collections::HashMap<PathBuf, Vec<String>>>,
+    /// Hash of the note text last sent to the decision model, so unchanged notes are not
+    /// sorted again.
+    classified: Mutex<std::collections::HashMap<PathBuf, u64>>,
     chatgpt: chatgpt::State,
+    /// The shared transcription worker (loaded ahead of time).
+    asr: Mutex<Option<Arc<recording::AsrWorker>>>,
+    /// Background work per note (connecting, finishing the transcript, summarizing).
+    activities: Mutex<Vec<(PathBuf, recording::Activity)>>,
 }
 
 /// Opens a URL in the user's default browser.
@@ -113,7 +127,10 @@ impl Core {
             indexer: indexer::IndexerHandle::default(),
             recording: Mutex::new(None),
             additions: Mutex::new(Default::default()),
+            classified: Mutex::new(Default::default()),
             chatgpt: Default::default(),
+            asr: Mutex::new(None),
+            activities: Mutex::new(Vec::new()),
         });
         std::fs::create_dir_all(core.notes_dir())?;
         recording::recover(&core);
@@ -180,11 +197,17 @@ impl Core {
     }
 
     /// "Test connection". Runs in the background; the result arrives as `ProviderTested`.
-    pub fn test_provider(self: &Arc<Self>, provider: &str) {
+    /// `key`: a key typed but not saved yet; `None` tests the stored key.
+    pub fn test_provider(self: &Arc<Self>, provider: &str, key: Option<String>) {
         let me = self.clone();
         let id = provider.to_string();
+        let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
         self.rt.spawn(async move {
-            let result = match me.client_for(&id) {
+            let client = match key {
+                Some(k) => me.client_with_token(&id, k),
+                None => me.client_for(&id),
+            };
+            let result = match client {
                 Some(c) => c.test_connection().await.map_err(|e| e.user_message(me.ui_language())),
                 None => Err("Unknown provider".into()),
             };
@@ -288,7 +311,7 @@ impl Core {
         if ln_platform::microphone_permission() == ln_platform::Permission::Denied {
             v.push(SetupStep::MicrophoneDenied);
         }
-        // One step per missing key or sign-in, even if several roles share it.
+        // One step per missing key or sign-in, naming the roles that need it.
         let s = self.settings();
         for role in ln_types::ChatRole::ALL {
             if role == ln_types::ChatRole::Suggestions && !s.live_suggestions.enabled {
@@ -297,10 +320,15 @@ impl Core {
             if role == ln_types::ChatRole::Summary && !s.notes.auto_summary {
                 continue;
             }
-            if let Some(step) = self.role_setup_step(role)
-                && !v.contains(&step)
-            {
-                v.push(step);
+            match self.role_setup_step(role) {
+                Some(SetupStep::KeyMissing { provider, .. }) => {
+                    match v.iter_mut().find(|x| matches!(x, SetupStep::KeyMissing { provider: p, .. } if *p == provider)) {
+                        Some(SetupStep::KeyMissing { roles, .. }) => roles.push(role),
+                        _ => v.push(SetupStep::KeyMissing { provider, roles: vec![role] }),
+                    }
+                }
+                Some(step) if !v.contains(&step) => v.push(step),
+                _ => {}
             }
         }
         if ln_models::find_llama_server().is_none() {
@@ -320,7 +348,7 @@ impl Core {
     }
 
     /// Stops recording (saving it), background work and local model servers.
-    pub fn shutdown(&self) {
+    pub fn shutdown(self: &Arc<Self>) {
         if self.recording.lock().is_some() {
             self.stop_recording_blocking();
         }

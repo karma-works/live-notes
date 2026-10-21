@@ -38,10 +38,16 @@ impl Client {
     }
 
     fn req(&self, method: reqwest::Method, path: &str) -> Result<reqwest::RequestBuilder> {
+        self.req_url(method, &self.url(path))
+    }
+
+    /// A request to an absolute URL with the provider's key and headers (endpoints outside
+    /// the OpenAI-compatible base, e.g. OpenRouter's `/api/alpha/decisions`).
+    pub(crate) fn req_url(&self, method: reqwest::Method, url: &str) -> Result<reqwest::RequestBuilder> {
         if self.needs_key() && self.api_key.is_none() {
             return Err(Error::MissingKey(self.provider.name.clone()));
         }
-        let mut b = self.http.request(method, self.url(path));
+        let mut b = self.http.request(method, url);
         if let Some(k) = &self.api_key {
             b = b.bearer_auth(k);
         }
@@ -314,12 +320,14 @@ impl Client {
         if self.needs_key() && self.api_key.is_none() {
             return Err(Error::MissingKey(self.provider.name.clone()));
         }
-        let b = self.req(reqwest::Method::GET, "models")?;
+        // OpenRouter lists models without a key; `/key` checks the key itself.
+        let path = if self.provider.kind == ProviderKind::OpenRouter { "key" } else { "models" };
+        let b = self.req(reqwest::Method::GET, path)?;
         check(b.send().await?).await.map(|_| ())
     }
 }
 
-async fn check(resp: reqwest::Response) -> Result<Value> {
+pub(crate) async fn check(resp: reqwest::Response) -> Result<Value> {
     let status = resp.status();
     let body = resp.text().await?;
     if !status.is_success() {
@@ -439,6 +447,29 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert_eq!(m[0].name, "GPT X");
         assert!(matches!(Client::new(provider(&s.uri(), ProviderKind::ChatGpt), None).chat(&req).await, Err(Error::MissingKey(_))));
+    }
+
+    #[tokio::test]
+    async fn connection_test_checks_the_openrouter_key() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/key"))
+            .and(header("authorization", "Bearer good"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {"label": "x"}})))
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/key"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error": {"message": "No auth credentials found"}})))
+            .mount(&s)
+            .await;
+        assert!(Client::new(provider(&s.uri(), ProviderKind::OpenRouter), Some("good".into())).test_connection().await.is_ok());
+        let e = Client::new(provider(&s.uri(), ProviderKind::OpenRouter), Some("bad".into())).test_connection().await.unwrap_err();
+        assert!(matches!(e, Error::Api { status: 401, .. }));
+        assert!(matches!(
+            Client::new(provider(&s.uri(), ProviderKind::OpenRouter), None).test_connection().await,
+            Err(Error::MissingKey(_))
+        ));
     }
 
     #[tokio::test]

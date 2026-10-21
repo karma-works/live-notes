@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.svg" width="128" height="128" alt="Live Notes"></p>
+
 # Live Notes
 
 Native macOS-App in Rust: Gespräche mitschneiden und **in der gesprochenen Sprache** transkribieren,
@@ -38,6 +40,11 @@ App-Bundle bauen: `scripts/bundle-macos.sh` → `dist/Live Notes.app`.
 | `ln-ai`, `ln-models` | OpenAI-kompatibler Client, Prompts, Kosten; Modellkatalog, Downloads, llama-server |
 | `ln-notes`, `ln-types` | Notizformat, Journal; gemeinsame Typen und Einstellungen |
 | `ln-bench` | Messungen mit echten Modellen |
+
+## Projektseite
+
+`site/` ist die GitHub-Pages-Seite mit einer Live-Demo der App in HTML (Skill `.claude/skills/html-demo`),
+veröffentlicht von `.github/workflows/pages.yml`.
 
 ## Dokumente
 

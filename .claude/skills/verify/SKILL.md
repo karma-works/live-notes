@@ -43,6 +43,20 @@ Per channel (`me` = microphone, `others` = system audio):
 | `sections=0` with `rms>0.01` | sound arrives but no speech detected | wrong rate (speech sped up), VAD |
 | `transcript` | what Whisper understood, per section with language | |
 
+## Responsiveness
+
+The tour measures the longest UI-thread stall (`heartbeat` in `tour.rs`) on start, while
+transcribing and on stop (`ui_responsive_*`, limit 250 ms / 400 ms). Take screenshots *before*
+resetting the heartbeat: `render_to_image` blocks the UI thread itself. Whisper is loaded once
+(`Core::warm_up`), shared by all recordings (`AsrWorker`), and must use fewer threads than the
+performance cores. Lock order: `recording` before a session's `state`.
+
+## Transcription quality
+
+`target/test-corpus/hard/` holds short and noisy Chinese speech. Run
+`ln-bench asr target/test-corpus/hard/*.wav`: the output must be 你好，我今天去上班。, not a loop.
+Never shorten Whisper's encoder window (`audio_ctx`): it made short sections loop.
+
 ## Known device behaviour (keep these fixed)
 
 All found with `probe`/`real` on a MacBook Air M1 with a Bluetooth headset:
@@ -73,6 +87,12 @@ All found with `probe`/`real` on a MacBook Air M1 with a Bluetooth headset:
   and the "Sign in with ChatGPT" setup step (`07b-settings-chatgpt.png`, `07c-setup-chatgpt.png`).
 - In the user's app: tokens in the keychain (`works.karma.livenotes` / `chatgpt`), host ID in
   `chatgpt-host.json` in the data folder; the log shows `chatgpt:` lines (never tokens or URLs).
+
+## Isolation
+
+Tour runs start the app with `LN_SECRETS=memory`: keys and ChatGPT tokens live only in memory,
+so a test never reads or rotates the user's keychain entries (a rotated refresh token would sign
+the user's app out). Keys for a test come from `LN_TEST_OPENROUTER_KEY` / `LN_TEST_OPENAI_KEY`.
 
 ## Permissions
 

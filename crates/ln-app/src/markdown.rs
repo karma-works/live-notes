@@ -43,7 +43,10 @@ pub fn blocks(text: &str) -> Vec<Block> {
     let note = Note::parse(text).unwrap_or_default();
     let speakers = note.speakers();
     let mut out = Vec::new();
-    if let Some(f) = &note.front {
+    // Front matter that only holds categories (shown in the note's top bar) gives no line.
+    if let Some(f) =
+        note.front.as_ref().filter(|f| f.created.is_some() || f.duration.is_some() || !f.languages.is_empty() || !f.labels.is_empty())
+    {
         out.push(Block::Header {
             date: f.created.map(|c| c.with_timezone(&chrono::Local).format("%d.%m.%Y %H:%M").to_string()),
             duration: f.duration.clone(),

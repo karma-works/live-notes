@@ -17,6 +17,8 @@ pub struct NoteEntry {
     /// Recording notes have a transcript.
     pub is_recording: bool,
     pub labels: Vec<String>,
+    /// The user's categories (front matter `categories:`), shown as coloured dots.
+    pub categories: Vec<String>,
 }
 
 impl Core {
@@ -43,6 +45,7 @@ impl Core {
                     languages: front.languages.iter().map(|l| l.to_string()).collect(),
                     is_recording: note.section(&SectionKind::Transcript).is_some(),
                     labels: front.labels.clone(),
+                    categories: front.categories.clone(),
                     path: f.path,
                 }
             })
@@ -97,8 +100,9 @@ impl Core {
         Ok(p)
     }
 
-    /// Renames the file to match a title. Recording notes get `manual_name` so the app never
-    /// renames them again.
+    /// Renames a note by hand: the name in the note list (front-matter title, or the first
+    /// heading of a plain note) and the file. Recording notes get `manual_name` so the app
+    /// never renames them again; their date prefix stays in the file name.
     pub fn rename_note(&self, path: &Path, title: &str) -> Result<PathBuf> {
         let clean = sanitize_title(title);
         if clean.is_empty() {
@@ -106,13 +110,16 @@ impl Core {
         }
         let mut nf = NoteFile::open(path)?;
         let mut note = nf.parse()?;
-        if let Some(f) = note.front.as_mut() {
-            f.title = Some(title.trim().to_string());
-            f.manual_name = true;
-            nf.text = note.render();
-            nf.save(true)?;
-        }
-        let new = unique_path(&path.with_file_name(format!("{clean}.md")), Some(path));
+        note.set_title(title);
+        nf.text = note.render();
+        nf.save(true)?;
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let name = match note.front.as_ref().and_then(|f| f.created) {
+            // `2026-10-21 1430 <title>` keeps recordings sorted by date in the Finder.
+            Some(_) if is_dated(stem) => format!("{} {clean}.md", &stem[..15]),
+            _ => format!("{clean}.md"),
+        };
+        let new = unique_path(&path.with_file_name(name), Some(path));
         if new != path {
             nf.rename_to(&new)?;
         }
@@ -123,13 +130,14 @@ impl Core {
     /// Manual notes named by date get the first heading as name once it exists (SPEC §5 F10).
     pub fn auto_name_note(&self, path: &Path) -> Option<PathBuf> {
         let stem = path.file_stem()?.to_str()?;
-        let is_auto = stem.len() >= 15 && stem.as_bytes()[4] == b'-' && stem[..10].chars().filter(|c| c.is_ascii_digit()).count() == 8;
-        if !is_auto {
+        if !is_dated(stem) {
             return None;
         }
         let text = std::fs::read_to_string(path).ok()?;
         let note = Note::parse(&text).ok()?;
-        if note.front.is_some() {
+        // Recordings are named by their summary; front matter that only holds categories
+        // does not make a note a recording.
+        if note.front.as_ref().is_some_and(|f| f.id.is_some() || f.title.is_some() || f.manual_name) {
             return None;
         }
         let title = note.title()?;
@@ -210,4 +218,12 @@ impl Core {
         let v = a.get_mut(path)?;
         (i < v.len()).then(|| v.remove(i))
     }
+}
+
+/// `2026-10-21 1430…`: named by date and time (new manual notes, recordings).
+fn is_dated(stem: &str) -> bool {
+    stem.len() >= 15
+        && stem.is_char_boundary(15)
+        && stem.as_bytes()[4] == b'-'
+        && stem[..15].chars().filter(|c| c.is_ascii_digit()).count() == 12
 }

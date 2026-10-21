@@ -1,5 +1,10 @@
 //! A recording session (SPEC §5 F1–F3): capture → VAD → ASR → journal + Markdown note.
 //! Audio lives only in memory; the journal holds text only.
+//!
+//! Responsiveness: Whisper is loaded once, ahead of time (`warm_up`), in one shared ASR worker.
+//! Starting shows the recording at once and connects the devices in the background ("connecting");
+//! stopping returns at once, the rest of the transcript and the summary follow in the background
+//! (`Activity`), and a new recording can start meanwhile: its sections queue behind the old ones.
 
 use crate::events::tr;
 use crate::suggest::LiveSuggester;
@@ -13,7 +18,7 @@ use ln_types::{Channel, Lang, Segment, TranscriptionMode};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -23,6 +28,8 @@ pub struct RecordingInfo {
     pub note_id: String,
     pub elapsed: Duration,
     pub paused: bool,
+    /// Devices are still being opened (Bluetooth headsets need a few seconds).
+    pub connecting: bool,
     pub level_me: f32,
     pub level_others: f32,
     /// e.g. `local/whisper-large-v3-turbo` or `openai/gpt-transcribe`.
@@ -33,10 +40,14 @@ pub struct RecordingInfo {
     pub my_notes: String,
 }
 
-enum Job {
-    Section(PendingSegment),
-    Redo { index: usize, lang: Lang },
-    Done,
+/// Background work on a note after its recording, shown in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activity {
+    /// Microphone and system audio are being opened.
+    Connecting,
+    /// The recording stopped; the last sections are being transcribed.
+    Finishing,
+    Summarizing,
 }
 
 pub(crate) struct State {
@@ -49,20 +60,51 @@ pub(crate) struct State {
     pub suggester: LiveSuggester,
 }
 
-pub(crate) struct Session {
-    pub note_path: PathBuf,
-    pub note_id: String,
-    created: DateTime<FixedOffset>,
-    started: Instant,
-    capture: Capture,
-    stop: Arc<AtomicBool>,
+/// What the ASR worker needs to know about the recording a section belongs to.
+pub(crate) struct Ctx {
+    id: u64,
     pub state: Arc<Mutex<State>>,
-    audio_thread: Option<JoinHandle<()>>,
-    asr_thread: Option<JoinHandle<()>>,
-    asr_tx: Sender<Job>,
-    transcriber: Arc<Mutex<String>>,
+    note_path: PathBuf,
+    note_id: String,
+    created: DateTime<FixedOffset>,
+    cloud_seconds: Mutex<f64>,
+}
+
+enum AsrJob {
+    /// Load the model and run it once, so the first real section is fast.
+    Warm,
+    Section(Arc<Ctx>, PendingSegment),
+    Redo(Arc<Ctx>, usize, Lang),
+    /// All sections of this recording are queued: write the note, then summarize.
+    Finish {
+        ctx: Arc<Ctx>,
+        elapsed: Duration,
+        summarize: bool,
+        done: Option<Sender<()>>,
+    },
+}
+
+/// One thread with one loaded transcriber, shared by all recordings of the same mode.
+pub(crate) struct AsrWorker {
+    key: String,
+    tx: Sender<AsrJob>,
+    name: Arc<Mutex<String>>,
     cloud: bool,
 }
+
+pub(crate) struct Session {
+    id: u64,
+    pub note_path: PathBuf,
+    pub note_id: String,
+    started: Option<Instant>,
+    capture: Option<Capture>,
+    stop: Arc<AtomicBool>,
+    audio_thread: Option<JoinHandle<()>>,
+    pub ctx: Arc<Ctx>,
+    worker: Arc<AsrWorker>,
+}
+
+static SESSION_IDS: AtomicU64 = AtomicU64::new(1);
 
 impl Core {
     pub fn recording_active(&self) -> bool {
@@ -72,30 +114,32 @@ impl Core {
     pub fn recording_info(&self) -> Option<RecordingInfo> {
         let g = self.recording.lock();
         let s = g.as_ref()?;
-        let st = s.state.lock();
+        let st = s.ctx.state.lock();
+        let level = |c| s.capture.as_ref().map(|cap| cap.level(c)).unwrap_or(0.0);
         Some(RecordingInfo {
             note_path: s.note_path.clone(),
             note_id: s.note_id.clone(),
-            elapsed: s.started.elapsed(),
-            paused: s.capture.is_paused(),
-            level_me: s.capture.level(Channel::Me),
-            level_others: s.capture.level(Channel::Others),
-            transcriber: s.transcriber.lock().clone(),
-            cloud: s.cloud,
+            elapsed: s.started.map(|t| t.elapsed()).unwrap_or_default(),
+            paused: s.capture.as_ref().is_some_and(|c| c.is_paused()),
+            connecting: s.capture.is_none(),
+            level_me: level(Channel::Me),
+            level_others: level(Channel::Others),
+            transcriber: s.worker.name.lock().clone(),
+            cloud: s.worker.cloud,
             segments: st.segments.len(),
             my_notes: st.my_notes.clone(),
         })
     }
 
     pub fn recording_segments(&self) -> Vec<Segment> {
-        self.recording.lock().as_ref().map(|s| s.state.lock().segments.clone()).unwrap_or_default()
+        self.recording.lock().as_ref().map(|s| s.ctx.state.lock().segments.clone()).unwrap_or_default()
     }
 
     pub(crate) fn current_transcript_text(&self, max_chars: usize) -> Option<String> {
         let g = self.recording.lock();
         let s = g.as_ref()?;
         let ui = self.ui_language();
-        let st = s.state.lock();
+        let st = s.ctx.state.lock();
         let text: String = st
             .segments
             .iter()
@@ -105,99 +149,79 @@ impl Core {
         Some(if n > max_chars { text.chars().skip(n - max_chars).collect() } else { text })
     }
 
-    /// Starts recording into a new note. `capture` overrides the devices (tests use files).
-    pub fn start_recording(self: &Arc<Self>, capture: Option<CaptureConfig>) -> Result<PathBuf> {
-        if self.recording_active() {
-            return Err(Error::User(tr(self.ui_language(), "Es läuft bereits eine Aufnahme.", "A recording is already running.")));
-        }
-        let settings = self.settings();
-        let ui = self.ui_language();
-        let transcriber = self.make_transcriber(settings.transcription.mode)?;
-        let name = transcriber.name();
-        let cloud = !name.starts_with("local/");
-        let created: DateTime<FixedOffset> = Local::now().fixed_offset();
-        let note_id = ulid::Ulid::new().to_string();
-        let rel = recording_file_name(&created, None, ui);
-        let note_path = unique_path(&self.notes_dir().join(rel), None);
-        let note = Note::new_recording(note_id.clone(), created, &name, ui);
-        atomic_write(&note_path, &note.render())?;
-        let journal = JournalWriter::create(&self.paths.journal_dir(), &note_id, &note_path, &created.to_rfc3339())?;
+    // ---- background activity -------------------------------------------------------------
 
-        let cfg = capture.unwrap_or_default();
-        let cap = Capture::start(&cfg).map_err(|e| {
-            let _ = std::fs::remove_file(&note_path);
-            Error::User(match e {
-                ln_audio::Error::Mic(_) => tr(
-                    ui,
-                    "Kein Zugriff auf das Mikrofon. Erlaube ihn in den Systemeinstellungen → Datenschutz.",
-                    "No microphone access. Allow it in System Settings → Privacy.",
-                ),
-                ln_audio::Error::System(_) => tr(
-                    ui,
-                    "Kein Zugriff auf System-Audio. Erlaube „Bildschirm- und Systemaudioaufnahme“ in den Systemeinstellungen.",
-                    "No access to system audio. Allow audio recording in System Settings → Privacy.",
-                ),
-                ln_audio::Error::File(f) => f,
-            })
-        })?;
-
-        let state = Arc::new(Mutex::new(State {
-            segments: vec![],
-            my_notes: String::new(),
-            pinned: vec![],
-            journal: Some(journal),
-            ring: AudioRing::default(),
-            last_write: Instant::now(),
-            suggester: LiveSuggester::default(),
-        }));
-        let stop = Arc::new(AtomicBool::new(false));
-        let (asr_tx, asr_rx) = unbounded::<Job>();
-        let transcriber_name = Arc::new(Mutex::new(name));
-
-        let audio_thread = {
-            let rx = cap.audio.clone();
-            let tx = asr_tx.clone();
-            let stop = stop.clone();
-            let silero = self.models().file("silero-vad-v5", 0).filter(|p| p.exists());
-            let me = self.clone();
-            std::thread::Builder::new().name("ln-audio".into()).spawn(move || audio_loop(rx, tx, stop, silero, &me)).expect("audio thread")
-        };
-        let asr_thread = {
-            let me = self.clone();
-            let state = state.clone();
-            let path = note_path.clone();
-            let id = note_id.clone();
-            let tn = transcriber_name.clone();
-            let mut engine =
-                AsrEngine::new(transcriber, PostProcessor::new(settings.languages.chinese_script), settings.languages.mine.clone());
-            std::thread::Builder::new()
-                .name("ln-asr".into())
-                .spawn(move || {
-                    asr_loop(&me, &mut engine, asr_rx, &state, &path, &id, created, &tn);
-                })
-                .expect("asr thread")
-        };
-
-        *self.recording.lock() = Some(Session {
-            note_path: note_path.clone(),
-            note_id,
-            created,
-            started: Instant::now(),
-            capture: cap,
-            stop,
-            state,
-            audio_thread: Some(audio_thread),
-            asr_thread: Some(asr_thread),
-            asr_tx,
-            transcriber: transcriber_name,
-            cloud,
-        });
-        self.emit(CoreEvent::RecordingChanged);
-        self.emit(CoreEvent::NotesChanged);
-        Ok(note_path)
+    /// What is happening to a note in the background, if anything.
+    pub fn activity(&self, note: &Path) -> Option<Activity> {
+        self.activities.lock().iter().find(|(p, _)| p == note).map(|(_, a)| *a)
     }
 
-    fn make_transcriber(self: &Arc<Self>, mode: TranscriptionMode) -> Result<Box<dyn Transcriber>> {
+    pub fn activities(&self) -> Vec<(PathBuf, Activity)> {
+        self.activities.lock().clone()
+    }
+
+    fn set_activity(&self, note: &Path, a: Option<Activity>) {
+        {
+            let mut v = self.activities.lock();
+            v.retain(|(p, _)| p != note);
+            if let Some(a) = a {
+                v.push((note.to_path_buf(), a));
+            }
+        }
+        self.emit(CoreEvent::ActivityChanged);
+    }
+
+    // ---- ASR worker ----------------------------------------------------------------------
+
+    /// Loads the transcription model in the background, so that starting a recording is instant.
+    /// Called at startup, after downloads and when transcription settings change.
+    pub fn warm_up(self: &Arc<Self>) {
+        let s = self.settings();
+        if !s.first_run_done || s.transcription.mode != TranscriptionMode::Local {
+            return;
+        }
+        if let Ok(w) = self.asr_worker() {
+            let _ = w.tx.send(AsrJob::Warm);
+        }
+    }
+
+    fn worker_key(&self) -> String {
+        let s = self.settings();
+        format!(
+            "{:?}|{}|{}|{:?}|{:?}",
+            s.transcription.mode, s.transcription.local_model, s.transcription.openai_model, s.languages.mine, s.languages.chinese_script
+        )
+    }
+
+    /// The worker for the current settings; a new one replaces it when the settings changed
+    /// (the old one finishes its queue and ends).
+    fn asr_worker(self: &Arc<Self>) -> Result<Arc<AsrWorker>> {
+        let key = self.worker_key();
+        let mut g = self.asr.lock();
+        if let Some(w) = g.as_ref()
+            && w.key == key
+        {
+            return Ok(w.clone());
+        }
+        let mode = self.settings().transcription.mode;
+        let loader = self.transcriber_loader(mode)?;
+        let cloud = mode != TranscriptionMode::Local;
+        let (tx, rx) = unbounded::<AsrJob>();
+        let name = Arc::new(Mutex::new(String::new()));
+        let me = self.clone();
+        let n2 = name.clone();
+        std::thread::Builder::new()
+            .name("ln-asr".into())
+            .spawn(move || asr_worker_loop(&me, loader, rx, &n2, cloud))
+            .map_err(|e| Error::User(e.to_string()))?;
+        let w = Arc::new(AsrWorker { key, tx, name, cloud });
+        *g = Some(w.clone());
+        Ok(w)
+    }
+
+    /// Checks right away that transcription can work (model downloaded, key present) and returns
+    /// a loader that the worker runs on its own thread.
+    fn transcriber_loader(self: &Arc<Self>, mode: TranscriptionMode) -> Result<Loader> {
         let ui = self.ui_language();
         let s = self.settings();
         if mode != TranscriptionMode::Local {
@@ -220,9 +244,26 @@ impl Core {
             }
             let c = self.client_for(&s.transcription.openai_provider).ok_or_else(|| Error::User("provider".into()))?;
             // v1.0: "live" uses the same per-section REST path (Realtime adapter is v1.1, SPEC §16).
-            return Ok(Box::new(ln_asr::CloudTranscriber::new(c, s.transcription.openai_model.clone(), self.runtime().clone())));
+            let t: Box<dyn Transcriber> =
+                Box::new(ln_asr::CloudTranscriber::new(c, s.transcription.openai_model.clone(), self.runtime().clone()));
+            return Ok(Box::new(move || Ok(t)));
         }
-        self.local_transcriber()
+        self.local_model_path()?;
+        let me = self.clone();
+        Ok(Box::new(move || me.local_transcriber()))
+    }
+
+    fn local_model_path(&self) -> Result<PathBuf> {
+        let id = self.settings().transcription.local_model;
+        self.models().file(&id, 0).filter(|p| p.exists()).or_else(|| std::env::var_os("LN_WHISPER_MODEL").map(PathBuf::from)).ok_or_else(
+            || {
+                Error::User(tr(
+                    self.ui_language(),
+                    "Das Transkriptionsmodell wird noch geladen. Bitte warte, bis der Download fertig ist.",
+                    "The transcription model is still downloading. Wait until it has finished.",
+                ))
+            },
+        )
     }
 
     pub(crate) fn local_transcriber_pub(&self) -> Result<Box<dyn Transcriber>> {
@@ -230,22 +271,10 @@ impl Core {
     }
 
     fn local_transcriber(&self) -> Result<Box<dyn Transcriber>> {
-        let ui = self.ui_language();
-        let id = self.settings().transcription.local_model;
-        let path = self
-            .models()
-            .file(&id, 0)
-            .filter(|p| p.exists())
-            .or_else(|| std::env::var_os("LN_WHISPER_MODEL").map(PathBuf::from))
-            .ok_or_else(|| {
-                Error::User(tr(
-                    ui,
-                    "Das Transkriptionsmodell wird noch geladen. Bitte warte, bis der Download fertig ist.",
-                    "The transcription model is still downloading. Wait until it has finished.",
-                ))
-            })?;
+        let path = self.local_model_path()?;
         #[cfg(feature = "whisper")]
         {
+            let id = self.settings().transcription.local_model;
             let name = id.trim_end_matches("-q5_0").trim_end_matches("-q8_0").to_string();
             let lid = self.models().file("whisper-base-q8_0", 0).filter(|p| p.exists());
             let t = ln_asr::WhisperTranscriber::load_with_lid(&path, &name, lid.as_deref()).map_err(|e| Error::User(e.to_string()))?;
@@ -258,23 +287,154 @@ impl Core {
         }
     }
 
+    // ---- start / stop --------------------------------------------------------------------
+
+    /// Starts recording into a new note and returns at once; the devices open in the background
+    /// (`RecordingInfo::connecting`). `capture` overrides the devices (tests use files).
+    pub fn start_recording(self: &Arc<Self>, capture: Option<CaptureConfig>) -> Result<PathBuf> {
+        if self.recording_active() {
+            return Err(Error::User(tr(self.ui_language(), "Es läuft bereits eine Aufnahme.", "A recording is already running.")));
+        }
+        let worker = self.asr_worker()?;
+        let ui = self.ui_language();
+        let created: DateTime<FixedOffset> = Local::now().fixed_offset();
+        let note_id = ulid::Ulid::new().to_string();
+        let rel = recording_file_name(&created, None, ui);
+        let note_path = unique_path(&self.notes_dir().join(rel), None);
+        let tname = {
+            let n = worker.name.lock().clone();
+            if n.is_empty() { self.transcriber_label() } else { n }
+        };
+        let note = Note::new_recording(note_id.clone(), created, &tname, ui);
+        atomic_write(&note_path, &note.render())?;
+        let journal = JournalWriter::create(&self.paths.journal_dir(), &note_id, &note_path, &created.to_rfc3339())?;
+        let ctx = Arc::new(Ctx {
+            id: SESSION_IDS.fetch_add(1, Ordering::Relaxed),
+            state: Arc::new(Mutex::new(State {
+                segments: vec![],
+                my_notes: String::new(),
+                pinned: vec![],
+                journal: Some(journal),
+                ring: AudioRing::default(),
+                last_write: Instant::now(),
+                suggester: LiveSuggester::default(),
+            })),
+            note_path: note_path.clone(),
+            note_id: note_id.clone(),
+            created,
+            cloud_seconds: Mutex::new(0.0),
+        });
+        let id = ctx.id;
+        *self.recording.lock() = Some(Session {
+            id,
+            note_path: note_path.clone(),
+            note_id,
+            started: None,
+            capture: None,
+            stop: Arc::new(AtomicBool::new(false)),
+            audio_thread: None,
+            ctx,
+            worker,
+        });
+        self.set_activity(&note_path, Some(Activity::Connecting));
+        self.emit(CoreEvent::RecordingChanged);
+        self.emit(CoreEvent::NotesChanged);
+        tracing::info!("recording started, connecting devices");
+        let me = self.clone();
+        let cfg = capture.unwrap_or_default();
+        std::thread::Builder::new()
+            .name("ln-connect".into())
+            .spawn(move || me.connect_devices(id, cfg))
+            .map_err(|e| Error::User(e.to_string()))?;
+        Ok(note_path)
+    }
+
+    /// `local/whisper-large-v3-turbo` before the worker has loaded its model.
+    fn transcriber_label(&self) -> String {
+        let s = self.settings();
+        match s.transcription.mode {
+            TranscriptionMode::Local => {
+                format!("local/{}", s.transcription.local_model.trim_end_matches("-q5_0").trim_end_matches("-q8_0"))
+            }
+            _ => format!("{}/{}", s.transcription.openai_provider, s.transcription.openai_model),
+        }
+    }
+
+    fn connect_devices(self: &Arc<Self>, id: u64, cfg: CaptureConfig) {
+        let t0 = Instant::now();
+        let result = Capture::start(&cfg);
+        let mut g = self.recording.lock();
+        let Some(s) = g.as_mut().filter(|s| s.id == id) else {
+            // Stopped while connecting.
+            if let Ok(mut c) = result {
+                c.stop();
+            }
+            return;
+        };
+        match result {
+            Ok(cap) => {
+                tracing::info!("devices connected in {:?}", t0.elapsed());
+                let rx = cap.audio.clone();
+                let tx = s.worker.tx.clone();
+                let stop = s.stop.clone();
+                let ctx = s.ctx.clone();
+                let silero = self.models().file("silero-vad-v5", 0).filter(|p| p.exists());
+                let me = self.clone();
+                s.audio_thread =
+                    std::thread::Builder::new().name("ln-audio".into()).spawn(move || audio_loop(rx, tx, ctx, stop, silero, &me)).ok();
+                s.capture = Some(cap);
+                s.started = Some(Instant::now());
+                let path = s.note_path.clone();
+                drop(g);
+                self.set_activity(&path, None);
+                self.emit(CoreEvent::RecordingChanged);
+            }
+            Err(e) => {
+                let s = g.take().expect("session");
+                drop(g);
+                let ui = self.ui_language();
+                tracing::warn!("opening the devices failed: {e}");
+                if let Some(j) = s.ctx.state.lock().journal.take() {
+                    let _ = j.finish();
+                }
+                let _ = std::fs::remove_file(&s.note_path);
+                self.set_activity(&s.note_path, None);
+                self.emit(CoreEvent::Notice(match e {
+                    ln_audio::Error::Mic(_) => tr(
+                        ui,
+                        "Kein Zugriff auf das Mikrofon. Erlaube ihn in den Systemeinstellungen → Datenschutz.",
+                        "No microphone access. Allow it in System Settings → Privacy.",
+                    ),
+                    ln_audio::Error::System(_) => tr(
+                        ui,
+                        "Kein Zugriff auf System-Audio. Erlaube „Bildschirm- und Systemaudioaufnahme“ in den Systemeinstellungen.",
+                        "No access to system audio. Allow audio recording in System Settings → Privacy.",
+                    ),
+                    ln_audio::Error::File(f) => f,
+                }));
+                self.emit(CoreEvent::RecordingChanged);
+                self.emit(CoreEvent::NotesChanged);
+            }
+        }
+    }
+
     pub fn pause_recording(&self, paused: bool) {
-        if let Some(s) = self.recording.lock().as_ref() {
-            s.capture.set_paused(paused);
+        if let Some(c) = self.recording.lock().as_ref().and_then(|s| s.capture.as_ref()) {
+            c.set_paused(paused);
         }
         self.emit(CoreEvent::RecordingChanged);
     }
 
     pub fn mute_channel(&self, c: Channel, muted: bool) {
-        if let Some(s) = self.recording.lock().as_ref() {
-            s.capture.set_muted(c, muted);
+        if let Some(cap) = self.recording.lock().as_ref().and_then(|s| s.capture.as_ref()) {
+            cap.set_muted(c, muted);
         }
     }
 
     /// The user's own notes typed during the recording ("Meine Notizen").
     pub fn set_recording_notes(&self, text: &str) {
         if let Some(s) = self.recording.lock().as_ref() {
-            s.state.lock().my_notes = text.to_string();
+            s.ctx.state.lock().my_notes = text.to_string();
         }
     }
 
@@ -282,64 +442,54 @@ impl Core {
     pub fn correct_language(&self, index: usize, lang: Lang) -> bool {
         let g = self.recording.lock();
         let Some(s) = g.as_ref() else { return false };
-        if s.state.lock().ring.get(index).is_none() {
+        if s.ctx.state.lock().ring.get(index).is_none() {
             return false;
         }
-        s.asr_tx.send(Job::Redo { index, lang }).is_ok()
+        s.worker.tx.send(AsrJob::Redo(s.ctx.clone(), index, lang)).is_ok()
     }
 
-    /// Stops and saves; the summary runs afterwards in the background.
+    /// Stops at once. The last sections, the note and the summary follow in the background
+    /// (`Activity::Finishing`, then `Summarizing`); a new recording may start meanwhile.
     pub fn stop_recording(self: &Arc<Self>) -> Option<PathBuf> {
-        let path = self.stop_recording_blocking();
-        if let Some(p) = &path
-            && self.settings().notes.auto_summary
-        {
-            let me = self.clone();
-            let p = p.clone();
-            std::thread::spawn(move || crate::summary::summarize(&me, &p));
-        }
-        path
+        let summarize = self.settings().notes.auto_summary;
+        self.stop_session(summarize, None)
     }
 
-    pub(crate) fn stop_recording_blocking(&self) -> Option<PathBuf> {
+    /// Stops and waits until the note is written (tests, shutdown). No summary.
+    pub(crate) fn stop_recording_blocking(self: &Arc<Self>) -> Option<PathBuf> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let p = self.stop_session(false, Some(tx))?;
+        let _ = rx.recv_timeout(Duration::from_secs(600));
+        Some(p)
+    }
+
+    fn stop_session(self: &Arc<Self>, summarize: bool, done: Option<Sender<()>>) -> Option<PathBuf> {
         let mut s = self.recording.lock().take()?;
+        tracing::info!("stop: begin");
         s.stop.store(true, Ordering::Relaxed);
-        s.capture.stop();
-        if let Some(t) = s.audio_thread.take() {
-            let _ = t.join();
-        }
-        let _ = s.asr_tx.send(Job::Done);
-        if let Some(t) = s.asr_thread.take() {
-            let _ = t.join();
-        }
-        let elapsed = s.started.elapsed();
-        let mut st = s.state.lock();
-        if st.segments.is_empty() && elapsed > Duration::from_secs(5) {
-            self.emit(CoreEvent::Notice(tr(
-                self.ui_language(),
-                "In dieser Aufnahme wurde keine Sprache erkannt. Prüfe Mikrofon und Systemaudio unter Einstellungen → Aufnahme testen.",
-                "No speech was recognised in this recording. Check microphone and system audio in Settings → Test recording.",
-            )));
-        }
-        tracing::info!("recording stopped after {:?}: {} segments", elapsed, st.segments.len());
-        let _ = write_note(self, &s.note_path, &st, s.created, Some(elapsed), &s.transcriber.lock());
-        if let Some(j) = st.journal.take() {
-            let _ = j.finish();
-        }
-        st.ring.clear();
-        drop(st);
+        let path = s.note_path.clone();
+        self.set_activity(&path, Some(Activity::Finishing));
         self.emit(CoreEvent::RecordingChanged);
-        self.emit(CoreEvent::NoteFileChanged(s.note_path.clone()));
-        self.emit(CoreEvent::NotesChanged);
-        self.indexer.kick();
-        Some(s.note_path.clone())
+        let elapsed = s.started.map(|t| t.elapsed()).unwrap_or_default();
+        let finish = move || {
+            if let Some(c) = s.capture.as_mut() {
+                c.stop();
+            }
+            if let Some(t) = s.audio_thread.take() {
+                let _ = t.join();
+            }
+            tracing::info!("stop: devices closed, {} queued for transcription", s.ctx.note_path.display());
+            let _ = s.worker.tx.send(AsrJob::Finish { ctx: s.ctx.clone(), elapsed, summarize, done });
+        };
+        let _ = std::thread::Builder::new().name("ln-stop".into()).spawn(finish);
+        Some(path)
     }
 
     /// For tests: waits until file sources are played and everything is transcribed.
     pub fn wait_recording_files_done(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if self.recording.lock().as_ref().is_some_and(|s| s.capture.files_done() && s.capture.audio.is_empty()) {
+            if self.recording.lock().as_ref().and_then(|s| s.capture.as_ref()).is_some_and(|c| c.files_done() && c.audio.is_empty()) {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -349,7 +499,7 @@ impl Core {
 
     pub fn pin_suggestion(&self, id: u64) {
         if let Some(s) = self.recording.lock().as_ref() {
-            let mut st = s.state.lock();
+            let mut st = s.ctx.state.lock();
             if let Some(line) = st.suggester.pin(id) {
                 st.pinned.push(line);
             }
@@ -358,12 +508,21 @@ impl Core {
 
     pub fn dismiss_suggestion(&self, id: u64) {
         if let Some(s) = self.recording.lock().as_ref() {
-            s.state.lock().suggester.dismiss(id);
+            s.ctx.state.lock().suggester.dismiss(id);
         }
     }
 }
 
-fn audio_loop(rx: Receiver<ln_audio::Tagged>, tx: Sender<Job>, stop: Arc<AtomicBool>, silero: Option<PathBuf>, core: &Arc<Core>) {
+type Loader = Box<dyn FnOnce() -> Result<Box<dyn Transcriber>> + Send>;
+
+fn audio_loop(
+    rx: Receiver<ln_audio::Tagged>,
+    tx: Sender<AsrJob>,
+    ctx: Arc<Ctx>,
+    stop: Arc<AtomicBool>,
+    silero: Option<PathBuf>,
+    core: &Arc<Core>,
+) {
     // Per channel: samples received and non-zero samples, to tell the user when a channel is mute.
     let started = Instant::now();
     let mut stats = [(0u64, 0u64, 0u32); 2];
@@ -379,6 +538,9 @@ fn audio_loop(rx: Receiver<ln_audio::Tagged>, tx: Sender<Job>, stop: Arc<AtomicB
         let _ = &silero;
         Box::new(ln_asr::EnergyVad::default())
     };
+    let send = |p: PendingSegment| {
+        let _ = tx.send(AsrJob::Section(ctx.clone(), p));
+    };
     let mut segs = [ChannelSegmenter::new(Channel::Me, vad(Channel::Me)), ChannelSegmenter::new(Channel::Others, vad(Channel::Others))];
     loop {
         match rx.recv_timeout(Duration::from_millis(200)) {
@@ -387,9 +549,8 @@ fn audio_loop(rx: Receiver<ln_audio::Tagged>, tx: Sender<Job>, stop: Arc<AtomicB
                 stats[i].0 += t.chunk.samples.len() as u64;
                 stats[i].1 += t.chunk.samples.iter().filter(|x| **x != 0.0).count() as u64;
                 stats[i].2 = t.chunk.sample_rate;
-                let s = &mut segs[i];
-                for p in s.push(&t.chunk.samples, t.chunk.sample_rate) {
-                    let _ = tx.send(Job::Section(p));
+                for p in segs[i].push(&t.chunk.samples, t.chunk.sample_rate) {
+                    send(p);
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
@@ -432,9 +593,9 @@ fn audio_loop(rx: Receiver<ln_audio::Tagged>, tx: Sender<Job>, stop: Arc<AtomicB
         if stop.load(Ordering::Relaxed) {
             // Drain what is still queued, then close open sections.
             while let Ok(t) = rx.try_recv() {
-                let s = &mut segs[if t.channel == Channel::Me { 0 } else { 1 }];
-                for p in s.push(&t.chunk.samples, t.chunk.sample_rate) {
-                    let _ = tx.send(Job::Section(p));
+                let i = if t.channel == Channel::Me { 0 } else { 1 };
+                for p in segs[i].push(&t.chunk.samples, t.chunk.sample_rate) {
+                    send(p);
                 }
             }
             break;
@@ -442,36 +603,68 @@ fn audio_loop(rx: Receiver<ln_audio::Tagged>, tx: Sender<Job>, stop: Arc<AtomicB
     }
     for s in segs.iter_mut() {
         if let Some(p) = s.flush() {
-            let _ = tx.send(Job::Section(p));
+            send(p);
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn asr_loop(
-    core: &Arc<Core>,
-    engine: &mut AsrEngine,
-    rx: Receiver<Job>,
-    state: &Arc<Mutex<State>>,
-    path: &Path,
-    note_id: &str,
-    created: DateTime<FixedOffset>,
-    tname: &Arc<Mutex<String>>,
-) {
-    let mut cloud_seconds = 0.0f64;
-    let cloud = !engine.transcriber_name().starts_with("local/");
+fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name: &Arc<Mutex<String>>, cloud: bool) {
+    let mut loader = Some(loader);
+    let mut engine: Option<AsrEngine> = None;
+    let mut load_failed = false;
+    let mut current_session = 0u64;
     let mut fell_back = false;
+    let new_engine = |t: Box<dyn Transcriber>| {
+        let s = core.settings();
+        AsrEngine::new(t, PostProcessor::new(s.languages.chinese_script), s.languages.mine.clone())
+    };
     while let Ok(job) = rx.recv() {
+        // Load lazily: the first job (usually `Warm` at startup) pays for it.
+        if engine.is_none()
+            && !load_failed
+            && let Some(l) = loader.take()
+        {
+            let t0 = Instant::now();
+            match l() {
+                Ok(t) => {
+                    *name.lock() = t.name();
+                    let mut e = new_engine(t);
+                    if !cloud {
+                        // One short run initialises the GPU kernels now instead of on the first section.
+                        let silence = PendingSegment { channel: Channel::Me, start_ms: 0, end_ms: 1200, pcm: Arc::new(vec![0.0; 19_200]) };
+                        let _ = e.process(&silence, Some(&Lang::new("en")));
+                        e.reset();
+                    }
+                    tracing::info!("asr: {} ready in {:?}", name.lock(), t0.elapsed());
+                    engine = Some(e);
+                }
+                Err(e) => {
+                    tracing::error!("asr: loading the transcriber failed: {e}");
+                    load_failed = true;
+                    core.emit(CoreEvent::Notice(e.to_string()));
+                }
+            }
+        }
+        let ctx = match &job {
+            AsrJob::Warm => continue,
+            AsrJob::Section(c, _) | AsrJob::Redo(c, _, _) | AsrJob::Finish { ctx: c, .. } => c.clone(),
+        };
+        if let Some(e) = engine.as_mut()
+            && ctx.id != current_session
+        {
+            e.reset();
+            current_session = ctx.id;
+        }
         match job {
-            Job::Done => break,
-            Job::Section(p) => {
-                let mut r = engine.process(&p, None);
+            AsrJob::Warm => {}
+            AsrJob::Section(ctx, p) => {
+                let Some(e) = engine.as_mut() else { continue };
+                let mut r = e.process(&p, None);
                 if r.is_err() && cloud && !fell_back {
                     // SPEC §5 F2: fall back to local transcription when the cloud fails.
                     if let Ok(local) = core.local_transcriber() {
-                        let s = core.settings();
-                        *engine = AsrEngine::new(local, PostProcessor::new(s.languages.chinese_script), s.languages.mine.clone());
-                        *tname.lock() = engine.transcriber_name();
+                        *name.lock() = local.name();
+                        *e = new_engine(local);
                         fell_back = true;
                         core.emit(CoreEvent::Notice(tr(
                             core.ui_language(),
@@ -479,43 +672,47 @@ fn asr_loop(
                             "Lost connection to OpenAI – transcribing locally now.",
                         )));
                         core.emit(CoreEvent::RecordingChanged);
-                        r = engine.process(&p, None);
+                        r = e.process(&p, None);
                     }
                 }
                 if cloud && !fell_back {
-                    cloud_seconds += (p.end_ms - p.start_ms) as f64 / 1000.0;
+                    *ctx.cloud_seconds.lock() += (p.end_ms - p.start_ms) as f64 / 1000.0;
                 }
                 match r {
                     Ok(Some(seg)) => {
-                        let mut st = state.lock();
+                        // Lock order everywhere: `recording` before `state` (the UI does the same).
+                        let live = core.recording.lock().as_ref().is_some_and(|s| s.id == ctx.id);
+                        let mut st = ctx.state.lock();
                         let index = st.segments.len();
                         st.segments.push(seg.clone());
                         if let Some(j) = st.journal.as_mut() {
                             let _ = j.append(&JournalEntry::Segment(seg.clone()));
                         }
                         st.ring.push(index, p);
-                        let write_due = st.last_write.elapsed() > Duration::from_secs(10);
-                        if write_due {
+                        if st.last_write.elapsed() > Duration::from_secs(10) {
                             st.last_write = Instant::now();
-                            let _ = write_note(core, path, &st, created, None, &tname.lock());
+                            let _ = write_note(core, &ctx.note_path, &st, ctx.created, None, &name.lock());
                         }
-                        let trigger = st.suggester.observe(&seg, &core.settings().live_suggestions);
+                        // Live suggestions only while this recording runs.
+                        let trigger = if live { st.suggester.observe(&seg, &core.settings().live_suggestions) } else { None };
                         drop(st);
-                        core.emit(CoreEvent::Segment { index, segment: seg });
+                        if live {
+                            core.emit(CoreEvent::Segment { index, segment: seg });
+                        }
                         if let Some(t) = trigger {
-                            crate::suggest::spawn(core, t, path.to_path_buf(), note_id.to_string(), state.clone());
+                            crate::suggest::spawn(core, t, ctx.note_path.clone(), ctx.note_id.clone(), ctx.state.clone());
                         }
                     }
                     Ok(None) => {}
                     Err(e) => tracing::warn!("transcription failed: {e}"),
                 }
             }
-            Job::Redo { index, lang } => {
-                let pending = state.lock().ring.get(index).cloned();
-                if let Some(p) = pending
-                    && let Ok(Some(seg)) = engine.process(&p, Some(&lang))
+            AsrJob::Redo(ctx, index, lang) => {
+                let pending = ctx.state.lock().ring.get(index).cloned();
+                if let (Some(p), Some(e)) = (pending, engine.as_mut())
+                    && let Ok(Some(seg)) = e.process(&p, Some(&lang))
                 {
-                    let mut st = state.lock();
+                    let mut st = ctx.state.lock();
                     if index < st.segments.len() {
                         st.segments[index] = seg.clone();
                         if let Some(j) = st.journal.as_mut() {
@@ -526,12 +723,63 @@ fn asr_loop(
                     core.emit(CoreEvent::SegmentReplaced { index, segment: seg });
                 }
             }
+            AsrJob::Finish { ctx, elapsed, summarize, done } => {
+                finish_note(core, &ctx, elapsed, &name.lock());
+                // A blocking stop (tests, shutdown) waits on `done`; only a user's stop sorts
+                // the note into categories.
+                let sort = done.is_none();
+                if let Some(d) = done {
+                    let _ = d.send(());
+                }
+                if summarize {
+                    core.set_activity(&ctx.note_path, Some(Activity::Summarizing));
+                    let me = core.clone();
+                    let path = ctx.note_path.clone();
+                    std::thread::spawn(move || {
+                        // Sorting after the summary: it reads the summary too, and the file
+                        // may have been renamed after its title.
+                        let renamed = crate::summary::summarize(&me, &path);
+                        me.set_activity(&path, None);
+                        if sort {
+                            me.classify_note(renamed.as_deref().unwrap_or(&path));
+                        }
+                    });
+                } else {
+                    core.set_activity(&ctx.note_path, None);
+                    if sort {
+                        core.classify_note(&ctx.note_path);
+                    }
+                }
+            }
         }
     }
-    if cloud_seconds > 0.0 {
-        let s = core.settings();
-        core.costs.record_audio(&s.transcription.openai_provider, &s.transcription.openai_model, Some(note_id), cloud_seconds);
+}
+
+/// Writes the final note after the last section, closes the journal, records cloud costs.
+fn finish_note(core: &Arc<Core>, ctx: &Ctx, elapsed: Duration, transcriber: &str) {
+    let mut st = ctx.state.lock();
+    if st.segments.is_empty() && elapsed > Duration::from_secs(5) {
+        core.emit(CoreEvent::Notice(tr(
+            core.ui_language(),
+            "In dieser Aufnahme wurde keine Sprache erkannt. Prüfe Mikrofon und Systemaudio unter Einstellungen → Aufnahme testen.",
+            "No speech was recognised in this recording. Check microphone and system audio in Settings → Test recording.",
+        )));
     }
+    tracing::info!("recording stopped after {:?}: {} segments", elapsed, st.segments.len());
+    let _ = write_note(core, &ctx.note_path, &st, ctx.created, Some(elapsed), transcriber);
+    if let Some(j) = st.journal.take() {
+        let _ = j.finish();
+    }
+    st.ring.clear();
+    drop(st);
+    let secs = *ctx.cloud_seconds.lock();
+    if secs > 0.0 {
+        let s = core.settings();
+        core.costs.record_audio(&s.transcription.openai_provider, &s.transcription.openai_model, Some(&ctx.note_id), secs);
+    }
+    core.emit(CoreEvent::NoteFileChanged(ctx.note_path.clone()));
+    core.emit(CoreEvent::NotesChanged);
+    core.indexer.kick();
 }
 
 /// Writes the note: keeps whatever is in the file, replaces notes/transcript/pinned sections.

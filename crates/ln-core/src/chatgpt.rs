@@ -193,6 +193,11 @@ impl Core {
             let model = m.id.clone();
             self.update_settings(|s| s.roles.set(ChatRole::Summary, RoleConfig { provider: "chatgpt".into(), model }));
         }
+        // Roles that could not run at all (no key) use the plan too, instead of staying broken.
+        let moved = self.use_chatgpt_for_unready_roles();
+        if !moved.is_empty() {
+            tracing::info!("chatgpt: roles without a usable model moved to the plan: {moved:?}");
+        }
         Ok(first)
     }
 

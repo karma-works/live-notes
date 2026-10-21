@@ -98,6 +98,29 @@ impl Core {
         }
     }
 
+    /// Moves every chat role that can't run (missing key, model) to the ChatGPT plan.
+    /// Returns the roles that were moved.
+    pub fn use_chatgpt_for_unready_roles(&self) -> Vec<ChatRole> {
+        if !self.chatgpt_ready() {
+            return vec![];
+        }
+        let s = self.settings();
+        let model = Some(s.roles.get(ChatRole::Summary))
+            .filter(|c| c.provider == "chatgpt")
+            .map(|c| c.model.clone())
+            .or_else(|| self.chatgpt_models().first().map(|m| m.id.clone()));
+        let Some(model) = model else { return vec![] };
+        let moved: Vec<ChatRole> = ChatRole::ALL.into_iter().filter(|r| !self.role_ready(*r)).collect();
+        if !moved.is_empty() {
+            self.update_settings(|s| {
+                for r in &moved {
+                    s.roles.set(*r, ln_types::RoleConfig { provider: "chatgpt".into(), model: model.clone() });
+                }
+            });
+        }
+        moved
+    }
+
     /// What the user still has to do before `role` works, if it is a key or a sign-in.
     pub(crate) fn role_setup_step(&self, role: ChatRole) -> Option<crate::SetupStep> {
         if self.role_ready(role) {
@@ -108,7 +131,7 @@ impl Core {
         match p.kind {
             ProviderKind::ChatGpt => Some(crate::SetupStep::ChatGptSignIn),
             ProviderKind::OpenRouter | ProviderKind::OpenAi if !s.privacy.offline_mode => {
-                Some(crate::SetupStep::AssistantKeyMissing(p.name.clone()))
+                Some(crate::SetupStep::KeyMissing { provider: p.name.clone(), roles: vec![role] })
             }
             _ => None,
         }
@@ -177,8 +200,8 @@ impl Core {
         match u {
             Unavailable::NoKey(p) => tr(
                 ui,
-                &format!("Für den Assistenten fehlt der {p}-Schlüssel. Trage ihn in den Einstellungen ein."),
-                &format!("The assistant needs a {p} key. Add it in Settings."),
+                &format!("Der {p}-API-Schlüssel fehlt. Trage ihn in den Einstellungen ein oder wähle dort ein anderes Modell."),
+                &format!("The {p} API key is missing. Add it in Settings or choose another model there."),
             ),
             Unavailable::ModelMissing => tr(ui, "Das Modell ist noch nicht geladen.", "The model isn't downloaded yet."),
             Unavailable::Offline => tr(ui, "Offline-Modus ist an.", "Offline mode is on."),

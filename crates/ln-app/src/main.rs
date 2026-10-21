@@ -19,13 +19,22 @@ use gpui_kit::*;
 use ln_core::Core;
 use std::sync::Arc;
 
-actions!(live_notes, [Quit, NewNote, ToggleRecording, OpenSearch, ToggleEdit, OpenSettings, ToggleSidebar, CloseWindow, ShowSources]);
+actions!(
+    live_notes,
+    [Quit, NewNote, ToggleRecording, OpenSearch, ToggleEdit, OpenSettings, ToggleSidebar, CloseWindow, ShowSources, GoBack, GoForward]
+);
 
 fn main() {
     let paths = ln_types::AppPaths::from_env();
     init_logging(&paths);
     let args: Vec<String> = std::env::args().collect();
-    let (core, events) = match Core::start(paths, Arc::new(ln_platform::KeychainStore)) {
+    // Test runs (verify.sh) must never read or rotate the user's real keys and ChatGPT tokens.
+    let secrets: Arc<dyn ln_platform::SecretStore> = if std::env::var("LN_SECRETS").as_deref() == Ok("memory") {
+        Arc::new(ln_platform::MemoryStore::default())
+    } else {
+        Arc::new(ln_platform::KeychainStore)
+    };
+    let (core, events) = match Core::start(paths, secrets) {
         Ok(x) => x,
         Err(e) => {
             tracing::error!("start failed: {e}");
@@ -64,6 +73,8 @@ fn main() {
             KeyBinding::new("cmd-,", OpenSettings, None),
             KeyBinding::new("cmd-\\", ToggleSidebar, None),
             KeyBinding::new("cmd-w", CloseWindow, None),
+            KeyBinding::new("cmd-[", GoBack, None),
+            KeyBinding::new("cmd-]", GoForward, None),
         ]);
         let quit_core = core.clone();
         cx.on_action(move |_: &Quit, cx: &mut App| {
@@ -85,6 +96,7 @@ fn main() {
                 MenuItem::separator(),
                 MenuItem::action(i18n::t("sources"), ShowSources),
             ]),
+            Menu::new(i18n::t("view")).items([MenuItem::action(i18n::t("back"), GoBack), MenuItem::action(i18n::t("forward"), GoForward)]),
         ]);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1180.), px(760.)), cx))),
@@ -117,7 +129,9 @@ fn main() {
                 });
             }};
         }
-        fallback!(OpenSettings, |v: &mut app::AppView, _w: &mut Window, cx: &mut Context<app::AppView>| v.open_settings(cx));
+        fallback!(OpenSettings, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.open_settings(w, cx));
+        fallback!(GoBack, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.go_back(w, cx));
+        fallback!(GoForward, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.go_forward(w, cx));
         fallback!(OpenSearch, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.open_search(w, cx));
         fallback!(NewNote, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.new_note(w, cx));
         fallback!(ToggleRecording, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.toggle_recording(w, cx));

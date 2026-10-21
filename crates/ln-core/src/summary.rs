@@ -6,23 +6,25 @@ use crate::{Core, CoreEvent};
 use ln_ai::prompts;
 use ln_notes::{Note, NoteFile, SectionKind, recording_file_name, unique_path};
 use ln_types::Channel;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub fn summarize(core: &Arc<Core>, path: &Path) {
+/// Returns the note's path afterwards (it is renamed after the title), `None` if no summary
+/// was written.
+pub fn summarize(core: &Arc<Core>, path: &Path) -> Option<PathBuf> {
     let ui = core.ui_language();
     let role = match core.role(ln_types::ChatRole::Summary) {
         Ok(r) => r,
         Err(u) => {
             core.emit(CoreEvent::Notice(format!("{} {}", tr(ui, "Keine Zusammenfassung:", "No summary:"), core.unavailable_text(&u))));
-            return;
+            return None;
         }
     };
-    let Ok(mut nf) = NoteFile::open(path) else { return };
-    let Ok(mut note) = nf.parse() else { return };
+    let Ok(mut nf) = NoteFile::open(path) else { return None };
+    let Ok(mut note) = nf.parse() else { return None };
     let lines = note.transcript_lines();
     if lines.is_empty() {
-        return;
+        return None;
     }
     let transcript: String = lines.iter().map(|l| format!("{}\n", l.format())).collect();
     let my_notes = note.section(&SectionKind::Notes).map(|s| s.body.clone()).unwrap_or_default();
@@ -37,12 +39,12 @@ pub fn summarize(core: &Arc<Core>, path: &Path) {
             Ok(t) => t,
             Err(e) => {
                 core.emit(CoreEvent::Notice(format!("{} {e}", tr(ui, "Zusammenfassung fehlgeschlagen:", "Summary failed:"))));
-                return;
+                return None;
             }
         };
     let Some(sum) = prompts::parse_summary(&text) else {
         core.emit(CoreEvent::Notice(tr(ui, "Die Zusammenfassung konnte nicht gelesen werden.", "Couldn't read the summary.")));
-        return;
+        return None;
     };
     // The file may have been edited meanwhile; re-read right before writing.
     if nf.changed_on_disk() {
@@ -67,7 +69,7 @@ pub fn summarize(core: &Arc<Core>, path: &Path) {
     }
     nf.text = note.render();
     if nf.save(true).is_err() {
-        return;
+        return None;
     }
     let mut final_path = path.to_path_buf();
     if !manual && let Some(created) = note.front.as_ref().and_then(|f| f.created) {
@@ -83,6 +85,7 @@ pub fn summarize(core: &Arc<Core>, path: &Path) {
     }
     core.emit(CoreEvent::SummaryReady { path: final_path.clone() });
     core.emit(CoreEvent::NotesChanged);
+    Some(final_path)
 }
 
 fn order_sections(note: &mut Note) {

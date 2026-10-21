@@ -1,0 +1,407 @@
+/* The Live Notes window inside the demo (prefix lnx-). Sizes are taken from
+   docs/screenshots/*.png (the app at 1180 × 760). */
+.hd-view:has(.lnx) {
+  background: #fff;
+}
+.hd-stage.lnx {
+  background: #fff;
+  color: #1c1c1e;
+  font: 400 14px/1.45 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif;
+}
+.lnx-app {
+  display: flex;
+  width: 1200px;
+  height: 750px;
+}
+.lnx-fill {
+  flex: 1;
+}
+
+/* Sidebar */
+.lnx-side {
+  position: relative;
+  width: 250px;
+  flex: none;
+  height: 100%;
+  background: #f7f7f7;
+  border-right: 1px solid #e6e6e6;
+  font-size: 14px;
+}
+.lnx-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 8px 4px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #e3e3e3;
+  border-radius: 7px;
+  background: #fff;
+  color: #6b6b70;
+}
+.lnx-search kbd {
+  margin-left: auto;
+  font: 500 12px/1 inherit;
+  color: #6b6b70;
+}
+.lnx-rec {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 8px;
+  height: 32px;
+  border-radius: 7px;
+  color: #1c1c1e;
+}
+.lnx-recdot {
+  display: none;
+  color: #ef4444;
+  font-size: 13px;
+}
+.lnx-rec.lnx-on {
+  background: #fdd8d8;
+  color: #ef4444;
+}
+.lnx-rec.lnx-on .lnx-recdot {
+  display: inline;
+}
+.lnx-rec.lnx-press,
+.lnx-btn.lnx-press,
+.lnx-stop.lnx-press {
+  filter: brightness(0.9);
+  transform: scale(0.98);
+}
+.lnx-sechead {
+  display: flex;
+  justify-content: space-between;
+  padding: 18px 14px 6px 12px;
+  font-size: 12.5px;
+}
+.lnx-group {
+  padding: 10px 12px 4px;
+  font-size: 12.5px;
+  color: #6b6b70;
+}
+.lnx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 8px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 7px;
+  white-space: nowrap;
+}
+.lnx-item > span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lnx-item em {
+  font-style: normal;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 400 12px/1 inherit;
+  color: #6b6b70;
+}
+.lnx-item.lnx-sel {
+  background: #e9e9ea;
+}
+.lnx-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 16px;
+  border-top: 1px solid #e6e6e6;
+}
+.lnx-foot i {
+  margin-left: auto;
+  color: #6b6b70;
+}
+
+/* Main pane */
+.lnx-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+.lnx-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: #6b6b70;
+}
+
+/* Recording view (08-recording.png) */
+.lnx-recview {
+  display: flex;
+  height: 100%;
+}
+.lnx-col {
+  display: flex;
+  flex-direction: column;
+  width: 630px;
+  height: 100%;
+  border-right: 1px solid #ececec;
+}
+.lnx-rechead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 51px;
+  padding: 0 32px;
+  border-bottom: 1px solid #ececec;
+}
+.lnx-rechead b {
+  font-size: 16px;
+  font-weight: 600;
+}
+.lnx-reddot {
+  color: #ef4444;
+}
+.lnx-timer {
+  color: #6b6b70;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.lnx-connect {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: #6b6b70;
+}
+.lnx-langs {
+  font-size: 12.5px;
+  color: #6b6b70;
+}
+.lnx-mynotes {
+  margin: 12px 32px 8px;
+  height: 120px;
+  padding: 10px;
+  border: 1px solid #e3e3e3;
+  border-radius: 7px;
+  color: #8a8a90;
+}
+.lnx-lines {
+  flex: 1;
+  padding: 10px 32px;
+  overflow: hidden;
+}
+.lnx-line {
+  margin-bottom: 12px;
+}
+.lnx-meta {
+  display: flex;
+  gap: 9px;
+  font-size: 12.5px;
+  color: #6b6b70;
+}
+.lnx-meta b {
+  font-weight: 500;
+  color: #1c1c1e;
+}
+.lnx-meta b.lnx-other {
+  color: #22a35a;
+}
+.lnx-text {
+  font-size: 15px;
+  line-height: 1.5;
+}
+.lnx-recfoot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 32px;
+  border-top: 1px solid #ececec;
+  font-size: 13.5px;
+  color: #6b6b70;
+}
+.lnx-meter {
+  width: 56px;
+  height: 4px;
+  border-radius: 2px;
+  background: #ececec;
+  overflow: hidden;
+}
+.lnx-meter i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: #22a35a;
+}
+.lnx-pause {
+  color: #1c1c1e;
+  display: inline-flex;
+}
+.lnx-stop {
+  padding: 7px 12px;
+  border-radius: 7px;
+  background: #fdd8d8;
+  color: #ef4444;
+  font-size: 14px;
+}
+.lnx-panel {
+  flex: 1;
+  padding: 14px 12px;
+}
+.lnx-panelhead {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #4b4b50;
+  margin-bottom: 12px;
+}
+.lnx-card {
+  padding: 12px;
+  border: 1px solid #e3e3e3;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: #4b4b50;
+}
+.lnx-hit {
+  margin: 10px 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1c1c1e;
+}
+.lnx-snip {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.lnx-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.lnx-btn {
+  padding: 2px 6px;
+  border: 1px solid #e3e3e3;
+  border-radius: 5px;
+  color: #1c1c1e;
+}
+.lnx-btn.lnx-ghost {
+  border-color: transparent;
+}
+
+/* Note view (04-recorded-note.png) */
+.lnx-note {
+  height: 100%;
+}
+.lnx-notehead {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  padding: 0 24px;
+  border-bottom: 1px solid #ececec;
+  font-size: 13px;
+  color: #6b6b70;
+}
+.lnx-notehead span:last-child {
+  color: #1c1c1e;
+  font-size: 14px;
+}
+.lnx-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 24px;
+  background: #f4f4f5;
+  border-bottom: 1px solid #ececec;
+  font-size: 12.5px;
+  color: #6b6b70;
+}
+.lnx-notebody {
+  width: 640px;
+  margin: 0 auto;
+  padding: 22px 0;
+  transform: translateX(-20px);
+}
+.lnx-date {
+  font-size: 12.5px;
+  color: #6b6b70;
+  margin-bottom: 8px;
+}
+.lnx-notebody h2 {
+  margin: 10px 0 6px;
+  font-size: 20px;
+  font-weight: 650;
+}
+.lnx-notebody h3 {
+  margin: 18px 0 8px;
+  font-size: 17px;
+  font-weight: 650;
+}
+.lnx-notebody ul {
+  margin: 0;
+  padding-left: 22px;
+  font-size: 15px;
+  line-height: 1.75;
+}
+.lnx-notebody li::marker {
+  color: #8a8a90;
+}
+.lnx-notebody u {
+  text-decoration-color: #b6b6bb;
+}
+.lnx-sum {
+  overflow: hidden;
+}
+.lnx-tasks div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  line-height: 2;
+}
+.lnx-tasks i {
+  width: 14px;
+  height: 14px;
+  border: 1px solid #c7c7cc;
+  border-radius: 3px;
+}
+.lnx-small {
+  padding: 0;
+}
+.lnx-small .lnx-text {
+  font-size: 14px;
+}
+.lnx-small .lnx-line {
+  margin-bottom: 8px;
+}
+
+/* Activity spinner (the app's Spinner); still under reduced motion. */
+.lnx-spin {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 1.6px solid #c7c7cc;
+  border-top-color: #6b6b70;
+  border-radius: 50%;
+  animation: lnx-turn 0.8s linear infinite;
+}
+@keyframes lnx-turn {
+  to {
+    transform: rotate(1turn);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lnx-spin {
+    animation: none;
+  }
+  .hd-stage.lnx {
+    animation: none;
+  }
+}

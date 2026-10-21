@@ -52,6 +52,7 @@ impl SourcesView {
 
 impl Render for SourcesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _slow = crate::app::SlowGuard(std::time::Instant::now(), "sources_view::render");
         let theme = cx.theme().clone();
         let settings = self.core.settings();
         let mut list = v_flex().gap_2();

@@ -5,14 +5,16 @@ use crate::i18n::t;
 use crate::note_view::{NoteView, NoteViewEvent};
 use crate::recording_view::RecordingView;
 use crate::search::{SearchEvent, SearchPanel};
+use crate::settings_view::SettingsView;
 use crate::sources_view::SourcesView;
-use crate::{CloseWindow, NewNote, OpenSearch, OpenSettings, ShowSources, ToggleEdit, ToggleRecording, ToggleSidebar};
+use crate::{CloseWindow, GoBack, GoForward, NewNote, OpenSearch, OpenSettings, ShowSources, ToggleEdit, ToggleRecording, ToggleSidebar};
 use chrono::{Datelike, Local, TimeZone};
 use futures::StreamExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, TitleBar, WindowExt as _, h_flex, scroll::ScrollableElement as _, v_flex,
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, StyledExt as _, TitleBar, WindowExt as _, h_flex,
+    scroll::ScrollableElement as _, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -27,6 +29,7 @@ enum Selected {
     Note(PathBuf),
     Recording,
     Sources,
+    Settings,
 }
 
 pub struct AppView {
@@ -39,8 +42,10 @@ pub struct AppView {
     search: Option<Entity<SearchPanel>>,
     first_run: Option<Entity<FirstRunView>>,
     sources: Option<Entity<SourcesView>>,
-    settings: Option<WeakEntity<crate::settings_view::SettingsView>>,
-    settings_window: Option<AnyWindowHandle>,
+    settings: Option<Entity<SettingsView>>,
+    /// Browser-like history of the main pane (⌘[ / ⌘]).
+    back: Vec<Selected>,
+    forward: Vec<Selected>,
     download: Option<f32>,
     starting: bool,
     sidebar_open: bool,
@@ -98,7 +103,8 @@ impl AppView {
             first_run,
             sources: None,
             settings: None,
-            settings_window: None,
+            back: vec![],
+            forward: vec![],
             download: None,
             starting: false,
             sidebar_open: true,
@@ -108,6 +114,8 @@ impl AppView {
         };
         v.reload_notes(cx);
         window.focus(&v.focus, cx);
+        // Load Whisper now, so that "Start recording" is instant later.
+        v.core.warm_up();
         v
     }
 
@@ -125,6 +133,15 @@ impl AppView {
     }
 
     fn on_core_event(&mut self, ev: CoreEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let t0 = std::time::Instant::now();
+        let name = format!("{ev:?}").chars().take(40).collect::<String>();
+        self.on_core_event_inner(ev, window, cx);
+        if t0.elapsed() > Duration::from_millis(30) {
+            tracing::warn!("slow UI: event {name} took {:?}", t0.elapsed());
+        }
+    }
+
+    fn on_core_event_inner(&mut self, ev: CoreEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             CoreEvent::NotesChanged => self.reload_notes(cx),
             CoreEvent::NoteFileChanged(p) => {
@@ -170,7 +187,10 @@ impl AppView {
             }
             CoreEvent::ModelsChanged => {
                 self.download = self.core.model_status().iter().find_map(|m| m.progress);
-                if let Some(s) = self.settings.as_ref().and_then(|w| w.upgrade()) {
+                if self.download.is_none() {
+                    self.core.warm_up();
+                }
+                if let Some(s) = &self.settings {
                     s.update(cx, |_, cx| cx.notify());
                 }
             }
@@ -180,28 +200,29 @@ impl AppView {
                 }
             }
             CoreEvent::ProviderTested { provider, result } => {
-                if let Some(s) = self.settings.as_ref().and_then(|w| w.upgrade()) {
+                if let Some(s) = &self.settings {
                     s.update(cx, |s, cx| s.provider_tested(&provider, result, cx));
                 }
             }
             CoreEvent::SettingsChanged => {
                 crate::i18n::set_language(self.core.ui_language());
+                // Load the transcriber for changed transcription settings before the next recording.
+                self.core.warm_up();
                 cx.notify();
             }
             CoreEvent::ChatGptChanged { first_sign_in } => {
-                if let Some(s) = self.settings.as_ref().and_then(|w| w.upgrade()) {
-                    // The settings live in their own window.
-                    let handle = self.settings_window;
-                    match handle {
-                        Some(h) => {
-                            let _ = h.update(cx, |_, w, cx| s.update(cx, |s, cx| s.chatgpt_changed(first_sign_in, w, cx)));
-                        }
-                        None => s.update(cx, |_, cx| cx.notify()),
-                    }
-                } else if first_sign_in {
+                if let Some(s) = &self.settings {
+                    s.update(cx, |s, cx| s.chatgpt_changed(first_sign_in, window, cx));
+                }
+                if first_sign_in && self.selected != Selected::Settings {
                     window.open_alert_dialog(cx, |alert, _, _| {
                         alert.title(t("chatgpt-first-title")).description(t("chatgpt-first-body")).ok_text(t("got-it"))
                     });
+                }
+            }
+            CoreEvent::ActivityChanged => {
+                if let Some(n) = &self.note {
+                    n.update(cx, |_, cx| cx.notify());
                 }
             }
             CoreEvent::Notice(msg) => window.push_notification(msg, cx),
@@ -209,15 +230,90 @@ impl AppView {
         cx.notify();
     }
 
+    /// Shows `to` in the main pane and records where we came from (like a browser).
+    fn navigate(&mut self, to: Selected) {
+        if self.selected == to {
+            return;
+        }
+        let from = std::mem::replace(&mut self.selected, to);
+        if from != Selected::None {
+            self.back.retain(|s| *s != from);
+            self.back.push(from);
+        }
+        self.forward.clear();
+    }
+
+    /// An entry can be shown again: the note still exists, the recording still runs.
+    fn reachable(&self, s: &Selected) -> bool {
+        match s {
+            Selected::Note(p) => p.exists(),
+            Selected::Recording => self.recording.is_some(),
+            _ => true,
+        }
+    }
+
+    pub(crate) fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        while let Some(to) = self.back.pop() {
+            if self.reachable(&to) {
+                let from = std::mem::replace(&mut self.selected, Selected::None);
+                if from != Selected::None {
+                    self.forward.push(from);
+                }
+                self.show(to, window, cx);
+                return;
+            }
+        }
+    }
+
+    pub(crate) fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        while let Some(to) = self.forward.pop() {
+            if self.reachable(&to) {
+                let from = std::mem::replace(&mut self.selected, Selected::None);
+                if from != Selected::None {
+                    self.back.push(from);
+                }
+                self.show(to, window, cx);
+                return;
+            }
+        }
+    }
+
+    /// Shows an entry from the history without recording it again.
+    fn show(&mut self, to: Selected, window: &mut Window, cx: &mut Context<Self>) {
+        match &to {
+            Selected::Note(p) if self.note.as_ref().is_none_or(|n| n.read(cx).path() != p.as_path()) => {
+                self.load_note(p.clone(), window, cx)
+            }
+            Selected::Settings => self.ensure_settings(window, cx),
+            Selected::Sources => self.ensure_sources(cx),
+            _ => {}
+        }
+        self.selected = to;
+        cx.notify();
+    }
+
     pub(crate) fn open_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.load_note(path.clone(), window, cx);
+        self.navigate(Selected::Note(path));
+        cx.notify();
+    }
+
+    fn load_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(n) = &self.note {
-            n.update(cx, |n, cx| n.save_now(cx));
+            n.update(cx, |n, cx| n.finish_editing(cx));
         }
         let core = self.core.clone();
+        let _slow = SlowGuard(std::time::Instant::now(), "NoteView::open");
         let view = cx.new(|cx| NoteView::open(core, &path, window, cx));
         self._subs.push(cx.subscribe_in(&view, window, |this, _, ev: &NoteViewEvent, window, cx| match ev {
             NoteViewEvent::Moved(Some(p)) => {
-                this.selected = Selected::Note(p.clone());
+                // Renamed: back/forward must lead to the new path, not the old one.
+                let old = std::mem::replace(&mut this.selected, Selected::Note(p.clone()));
+                for s in this.back.iter_mut().chain(this.forward.iter_mut()) {
+                    if *s == old {
+                        *s = Selected::Note(p.clone());
+                    }
+                }
                 this.reload_notes(cx);
             }
             NoteViewEvent::Moved(None) => {
@@ -234,8 +330,6 @@ impl AppView {
             }
         }));
         self.note = Some(view);
-        self.selected = Selected::Note(path);
-        cx.notify();
     }
 
     pub(crate) fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -249,12 +343,14 @@ impl AppView {
     }
 
     pub fn toggle_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.core.recording_active() {
-            let core = self.core.clone();
-            cx.background_spawn(async move {
-                core.stop_recording();
-            })
-            .detach();
+        let _slow = SlowGuard(std::time::Instant::now(), "toggle_recording");
+        tracing::info!("toggle_recording: enter");
+        let active = self.core.recording_active();
+        tracing::info!("toggle_recording: active={active}");
+        if active {
+            // Returns at once; the transcript is finished and summarized in the background.
+            self.core.stop_recording();
+            cx.notify();
             return;
         }
         if !self.core.settings().recording_consent_accepted {
@@ -284,7 +380,26 @@ impl AppView {
         self.start_recording_with(None, window, cx);
     }
 
+    fn request_mic_then_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::info!("recording: asking for microphone permission");
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let tx = parking_lot::Mutex::new(Some(tx));
+        ln_platform::request_microphone_permission(move |ok| {
+            if let Some(tx) = tx.lock().take() {
+                let _ = tx.send(ok);
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let granted = rx.await.unwrap_or(false);
+            tracing::info!("recording: microphone permission answered, granted {granted}");
+            // Denied → the next call shows the "not allowed" dialog.
+            let _ = this.update_in(cx, |v, window, cx| v.start_recording_with(None, window, cx));
+        })
+        .detach();
+    }
+
     pub(crate) fn start_recording_with(&mut self, capture: Option<ln_core::CaptureConfig>, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::info!("recording: start requested (starting already: {})", self.starting);
         if self.starting {
             return;
         }
@@ -310,20 +425,16 @@ impl AppView {
                     return;
                 }
                 ln_platform::Permission::NotDetermined => {
-                    let (tx, rx) = futures::channel::oneshot::channel();
-                    let tx = parking_lot::Mutex::new(Some(tx));
-                    ln_platform::request_microphone_permission(move |ok| {
-                        if let Some(tx) = tx.lock().take() {
-                            let _ = tx.send(ok);
-                        }
+                    // macOS asks twice (microphone, then system audio): say so first, so the
+                    // second prompt isn't taken for a repeated one.
+                    let me = cx.entity().downgrade();
+                    window.open_alert_dialog(cx, move |alert, _, _| {
+                        let me = me.clone();
+                        alert.title(t("perm-title")).description(t("perm-body")).ok_text(t("perm-ok")).on_ok(move |_, window, cx| {
+                            let _ = me.update(cx, |v, cx| v.request_mic_then_start(window, cx));
+                            true
+                        })
                     });
-                    cx.spawn_in(window, async move |this, cx| {
-                        let granted = rx.await.unwrap_or(false);
-                        // Denied → the next call shows the "not allowed" dialog.
-                        let _ = granted;
-                        let _ = this.update_in(cx, |v, window, cx| v.start_recording_with(None, window, cx));
-                    })
-                    .detach();
                     return;
                 }
                 ln_platform::Permission::Granted => {}
@@ -340,8 +451,9 @@ impl AppView {
                 match result {
                     Ok(path) => {
                         let core = v.core.clone();
+                        let _slow = SlowGuard(std::time::Instant::now(), "RecordingView::new");
                         v.recording = Some(cx.new(|cx| RecordingView::new(core, path, window, cx)));
-                        v.selected = Selected::Recording;
+                        v.navigate(Selected::Recording);
                         v.reload_notes(cx);
                     }
                     Err(e) => window.push_notification(e.to_string(), cx),
@@ -380,35 +492,31 @@ impl AppView {
         cx.notify();
     }
 
-    pub(crate) fn open_settings(&mut self, cx: &mut Context<Self>) {
-        if let Some(w) = self.settings.as_ref().and_then(|w| w.upgrade()) {
-            let _ = w;
-            return;
+    /// Settings open as a page in the main pane; Back returns to where the user came from.
+    pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_settings(window, cx);
+        self.navigate(Selected::Settings);
+        cx.notify();
+    }
+
+    fn ensure_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.is_none() {
+            let core = self.core.clone();
+            self.settings = Some(cx.new(|cx| SettingsView::new(core, window, cx)));
         }
-        let core = self.core.clone();
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(640.), px(720.)), cx))),
-            titlebar: Some(TitlebarOptions { title: Some(t("settings").into()), ..Default::default() }),
-            ..Default::default()
-        };
-        let slot: std::rc::Rc<std::cell::RefCell<Option<WeakEntity<crate::settings_view::SettingsView>>>> = Default::default();
-        let slot2 = slot.clone();
-        let w = gpui_kit::open_window(options, cx, move |window, cx| {
-            let v = cx.new(|cx| crate::settings_view::SettingsView::new(core.clone(), window, cx));
-            *slot2.borrow_mut() = Some(v.downgrade());
-            v
-        });
-        self.settings_window = w.ok().map(|(h, _)| h);
-        self.settings = slot.borrow().clone();
     }
 
     pub(crate) fn show_sources(&mut self, cx: &mut Context<Self>) {
+        self.ensure_sources(cx);
+        self.navigate(Selected::Sources);
+        cx.notify();
+    }
+
+    fn ensure_sources(&mut self, cx: &mut Context<Self>) {
         if self.sources.is_none() {
             let core = self.core.clone();
             self.sources = Some(cx.new(|cx| SourcesView::new(core, cx)));
         }
-        self.selected = Selected::Sources;
-        cx.notify();
     }
 
     // ---- rendering -----------------------------------------------------------------------
@@ -418,6 +526,7 @@ impl AppView {
         let recording = self.core.recording_info();
         let mut list = v_flex().gap_px();
         let groups = group_notes(&self.notes);
+        let cats = self.core.settings().categories;
         if self.notes.is_empty() {
             list = list.child(div().px_3().py_2().text_xs().text_color(theme.muted_foreground).child(t("empty-notes")));
         }
@@ -427,7 +536,7 @@ impl AppView {
             }
             list = list.child(div().px_3().pt_3().pb_1().text_xs().text_color(theme.muted_foreground).child(label));
             for n in items {
-                list = list.child(self.note_row(n, cx));
+                list = list.child(self.note_row(n, &cats, cx));
             }
         }
         let record_label = match &recording {
@@ -474,7 +583,7 @@ impl AppView {
                             .label(record_label)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if this.recording.is_some() && this.selected != Selected::Recording {
-                                    this.selected = Selected::Recording;
+                                    this.navigate(Selected::Recording);
                                     cx.notify();
                                 } else {
                                     this.toggle_recording(window, cx);
@@ -522,7 +631,7 @@ impl AppView {
                                     .ghost()
                                     .icon(IconName::Settings)
                                     .tooltip(format!("{} ⌘,", t("settings")))
-                                    .on_click(cx.listener(|this, _, _, cx| this.open_settings(cx))),
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx))),
                             )
                             .on_click(cx.listener(|this, _, _, cx| this.show_sources(cx))),
                     )
@@ -542,6 +651,30 @@ impl AppView {
             )
     }
 
+    /// Back and forward in the title bar, as in a browser.
+    fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_1()
+            .child(
+                Button::new("nav-back")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ChevronLeft)
+                    .tooltip(t("back"))
+                    .disabled(self.back.is_empty())
+                    .on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx))),
+            )
+            .child(
+                Button::new("nav-forward")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ChevronRight)
+                    .tooltip(t("forward"))
+                    .disabled(self.forward.is_empty())
+                    .on_click(cx.listener(|this, _, window, cx| this.go_forward(window, cx))),
+            )
+    }
+
     /// Open setup steps as a short checklist with one action each (SPEC §6.1 rule 6).
     fn render_setup(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         use ln_core::SetupStep::*;
@@ -552,32 +685,74 @@ impl AppView {
         let theme = cx.theme().clone();
         let mut col = v_flex().gap_1().p_2().mb_1().rounded_md().border_1().border_color(theme.border).bg(theme.background);
         col = col.child(div().text_xs().font_semibold().child(t("setup")));
+        // 0 = open settings, 1 = macOS privacy settings, 2 = move roles to the ChatGPT plan.
+        let chatgpt_ok = matches!(self.core.chatgpt_status(), ln_core::ChatGptStatus::SignedIn { plan_usage: true, .. });
         for (i, step) in steps.iter().enumerate() {
-            let (text, action): (String, Option<(&str, u8)>) = match step {
-                AssistantKeyMissing(p) => (format!("{} ({p})", t("setup-key")), Some((t("setup-key-action"), 0))),
-                ChatGptSignIn => (t("setup-chatgpt").to_string(), Some((t("setup-chatgpt-action"), 0))),
-                MicrophoneDenied => (t("setup-mic").to_string(), Some((t("open-system-settings"), 1))),
-                TranscriptionModelMissing => (t("setup-model").to_string(), None),
-                LlamaServerMissing => (t("setup-llama").to_string(), None),
+            let (text, actions): (String, Vec<(&str, u8)>) = match step {
+                KeyMissing { provider, roles } => {
+                    let names: Vec<&str> = roles.iter().map(|r| role_name(*r)).collect();
+                    let roles_text = match names.as_slice() {
+                        [] => String::new(),
+                        [one] => one.to_string(),
+                        [rest @ .., last] => format!("{} {} {last}", rest.join(", "), t("and")),
+                    };
+                    let mut a = vec![(t("setup-key-action"), 0)];
+                    if chatgpt_ok {
+                        a.insert(0, (t("setup-use-chatgpt"), 2));
+                    }
+                    (t("setup-key").replace("{roles}", &roles_text).replace("{provider}", provider), a)
+                }
+                ChatGptSignIn => (t("setup-chatgpt").to_string(), vec![(t("setup-chatgpt-action"), 0)]),
+                MicrophoneDenied => (t("setup-mic").to_string(), vec![(t("open-system-settings"), 1)]),
+                TranscriptionModelMissing => (t("setup-model").to_string(), vec![]),
+                LlamaServerMissing => (t("setup-llama").to_string(), vec![]),
                 ModelsDownloading => continue,
             };
             let mut row = v_flex().gap_1().child(div().text_xs().text_color(theme.muted_foreground).child(text));
-            if let Some((label, kind)) = action {
-                row = row.child(Button::new(("setup", i)).xsmall().label(label).on_click(cx.listener(move |this, _, _, cx| match kind {
-                    0 => this.open_settings(cx),
-                    _ => cx.open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"),
-                })));
+            let mut buttons = h_flex().gap_1().flex_wrap();
+            for (k, (label, kind)) in actions.into_iter().enumerate() {
+                buttons = buttons.child(Button::new(("setup", i * 4 + k)).xsmall().label(label).on_click(cx.listener(
+                    move |this, _, window, cx| match kind {
+                        0 => this.open_settings(window, cx),
+                        2 => {
+                            this.core.use_chatgpt_for_unready_roles();
+                            if let Some(s) = &this.settings {
+                                s.update(cx, |s, cx| s.chatgpt_changed(false, window, cx));
+                            }
+                            cx.notify();
+                        }
+                        _ => cx.open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"),
+                    },
+                )));
             }
+            row = row.child(buttons);
             col = col.child(row);
         }
         Some(col.into_any_element())
     }
 
-    fn note_row(&self, n: &NoteEntry, cx: &mut Context<Self>) -> impl IntoElement {
+    fn note_row(&self, n: &NoteEntry, cats: &ln_types::Categories, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let selected = matches!(&self.selected, Selected::Note(p) if p == &n.path);
         let path = n.path.clone();
         let id = SharedString::from(n.path.to_string_lossy().into_owned());
+        // Overlapping coloured dots like Finder tags; only categories that still exist.
+        let dots: Vec<AnyElement> = n
+            .categories
+            .iter()
+            .filter_map(|c| cats.color_of(c))
+            .enumerate()
+            .map(|(i, color)| {
+                div()
+                    .size(px(9.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(theme.sidebar)
+                    .bg(crate::theme::tag_color(Some(color)))
+                    .when(i > 0, |d| d.ml(px(-3.)))
+                    .into_any_element()
+            })
+            .collect();
         h_flex()
             .id(ElementId::Name(id))
             .mx_2()
@@ -589,8 +764,32 @@ impl AppView {
             .cursor_pointer()
             .when(selected, |d| d.bg(theme.sidebar_accent).text_color(theme.sidebar_accent_foreground))
             .child(div().flex_1().overflow_hidden().text_ellipsis().whitespace_nowrap().child(n.title.clone()))
+            .when_some(self.core.activity(&n.path), |d, a| {
+                let label = match a {
+                    ln_core::Activity::Connecting => t("activity-short-connecting"),
+                    ln_core::Activity::Finishing => t("activity-short-finishing"),
+                    ln_core::Activity::Summarizing => t("activity-short-summarizing"),
+                };
+                d.child(
+                    h_flex()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(gpui_kit::component::spinner::Spinner::new().xsmall())
+                        .child(label),
+                )
+            })
+            .when(!dots.is_empty(), |d| d.child(h_flex().flex_none().children(dots)))
             .when(!n.languages.is_empty(), |d| d.child(div().text_xs().text_color(theme.muted_foreground).child(n.languages.join(" "))))
-            .on_click(cx.listener(move |this, _, window, cx| this.open_note(path.clone(), window, cx)))
+            .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                this.open_note(path.clone(), window, cx);
+                // Double-click: rename, as in the Finder.
+                if ev.click_count() >= 2
+                    && let Some(note) = &this.note
+                {
+                    note.update(cx, |n, cx| n.start_rename(window, cx));
+                }
+            }))
     }
 
     fn render_main(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -598,6 +797,7 @@ impl AppView {
             Selected::Recording if self.recording.is_some() => self.recording.clone().unwrap().into_any_element(),
             Selected::Note(_) if self.note.is_some() => self.note.clone().unwrap().into_any_element(),
             Selected::Sources if self.sources.is_some() => self.sources.clone().unwrap().into_any_element(),
+            Selected::Settings if self.settings.is_some() => self.settings.clone().unwrap().into_any_element(),
             _ => {
                 let theme = cx.theme().clone();
                 v_flex()
@@ -628,6 +828,24 @@ impl AppView {
                     .into_any_element()
             }
         }
+    }
+}
+
+/// Logs UI work that takes long enough to be felt.
+pub(crate) struct SlowGuard(pub std::time::Instant, pub &'static str);
+impl Drop for SlowGuard {
+    fn drop(&mut self) {
+        if self.0.elapsed() > Duration::from_millis(30) {
+            tracing::warn!("slow UI: {} took {:?}", self.1, self.0.elapsed());
+        }
+    }
+}
+
+fn role_name(r: ln_types::ChatRole) -> &'static str {
+    match r {
+        ln_types::ChatRole::Assistant => t("role-assistant"),
+        ln_types::ChatRole::Suggestions => t("role-suggestions"),
+        ln_types::ChatRole::Summary => t("role-summary"),
     }
 }
 
@@ -673,6 +891,8 @@ impl Focusable for AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t0 = std::time::Instant::now();
+        let _slow = SlowGuard(t0, "AppView::render");
         if let Some(fr) = &self.first_run {
             return v_flex().size_full().bg(cx.theme().background).child(TitleBar::new()).child(fr.clone()).into_any_element();
         }
@@ -686,10 +906,9 @@ impl Render for AppView {
             .on_action(cx.listener(|this, _: &NewNote, window, cx| this.new_note(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleRecording, window, cx| this.toggle_recording(window, cx)))
             .on_action(cx.listener(|this, _: &OpenSearch, window, cx| this.open_search(window, cx)))
-            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
-                tracing::info!("view action OpenSettings");
-                this.open_settings(cx)
-            }))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)))
+            .on_action(cx.listener(|this, _: &GoBack, window, cx| this.go_back(window, cx)))
+            .on_action(cx.listener(|this, _: &GoForward, window, cx| this.go_forward(window, cx)))
             .on_action(cx.listener(|this, _: &ShowSources, _, cx| this.show_sources(cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.sidebar_open = !this.sidebar_open;
@@ -703,7 +922,7 @@ impl Render for AppView {
                 }
             }))
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
-            .child(TitleBar::new())
+            .child(TitleBar::new().child(self.render_nav(cx)))
             .child(
                 h_flex()
                     .flex_1()
@@ -729,5 +948,16 @@ impl AppView {
     }
     pub(crate) fn search_panel(&self) -> Option<Entity<SearchPanel>> {
         self.search.clone()
+    }
+    /// Note list as shown in the sidebar: title and categories.
+    pub(crate) fn note_list(&self) -> Vec<(String, Vec<String>)> {
+        self.notes.iter().map(|n| (n.title.clone(), n.categories.clone())).collect()
+    }
+    /// What the main pane shows, for the tour's checks.
+    pub(crate) fn page(&self) -> String {
+        match &self.selected {
+            Selected::Note(p) => format!("Note {}", p.display()),
+            other => format!("{other:?}"),
+        }
     }
 }

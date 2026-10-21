@@ -4,7 +4,7 @@ use crate::i18n::t;
 use crate::markdown::{Block, blocks};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, scroll::ScrollableElement as _, v_flex,
@@ -42,6 +42,15 @@ pub struct NoteView {
     conflict: bool,
     additions: Vec<String>,
     save_task: Option<Task<()>>,
+    /// Name in the note list and the note's categories, read from the text.
+    title: String,
+    categories: Vec<String>,
+    /// The text changed since editing began; leaving the editor then sorts the note.
+    edited: bool,
+    /// Categories when editing began: if the user changed them by hand, they stay.
+    categories_at_edit: Vec<String>,
+    /// Inline rename field in the header.
+    rename: Option<Entity<InputState>>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -58,6 +67,7 @@ impl NoteView {
                 if v != this.text {
                     this.text = v;
                     this.dirty = true;
+                    this.edited = true;
                     this.schedule_save(cx);
                 }
             }
@@ -76,18 +86,94 @@ impl NoteView {
             conflict: false,
             additions,
             save_task: None,
+            title: String::new(),
+            categories: vec![],
+            edited: false,
+            categories_at_edit: vec![],
+            rename: None,
             focus: cx.focus_handle(),
             _subs: vec![sub],
         };
+        v.refresh_meta();
+        v.categories_at_edit = v.categories.clone();
         if mode == Mode::Edit {
             v.focus_editor(window, cx);
         }
         v
     }
 
+    /// Title and categories from the current text.
+    fn refresh_meta(&mut self) {
+        let note = ln_notes::Note::parse(&self.text).unwrap_or_default();
+        let stem = self.file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        self.title = note.title().filter(|t| !t.trim().is_empty()).unwrap_or(stem);
+        self.categories = note.categories();
+    }
+
+    /// Saves and, if the text changed while editing, sorts the note into its categories
+    /// (one request to the decision model). Called when leaving the editor or the note.
+    pub fn finish_editing(&mut self, cx: &mut Context<Self>) {
+        self.save_now(cx);
+        if !self.edited || self.dirty || self.conflict {
+            return;
+        }
+        self.edited = false;
+        self.refresh_meta();
+        if self.categories == self.categories_at_edit {
+            self.core.classify_note(&self.file.path);
+        }
+        self.categories_at_edit = self.categories.clone();
+    }
+
+    /// Shows the rename field in the header (also from a double-click in the note list).
+    pub fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_now(cx);
+        let title = self.title.clone();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(title));
+        self._subs.push(cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, window, cx| {
+            if matches!(ev, InputEvent::PressEnter { .. }) {
+                this.commit_rename(window, cx);
+            }
+        }));
+        input.update(cx, |i, cx| i.focus(window, cx));
+        self.rename = Some(input);
+        cx.notify();
+    }
+
+    fn commit_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.rename.take() else { return };
+        let new = input.read(cx).value().trim().to_string();
+        window.focus(&self.focus, cx);
+        cx.notify();
+        if new.is_empty() || new == self.title {
+            return;
+        }
+        self.save_now(cx);
+        match self.core.rename_note(&self.file.path, &new) {
+            Ok(path) => {
+                self.file.path = path.clone();
+                self.reload(window, cx);
+                cx.emit(NoteViewEvent::Moved(Some(path)));
+            }
+            Err(e) => window.push_notification(e.to_string(), cx),
+        }
+    }
+
     #[cfg(feature = "screenshots")]
     pub fn is_editing(&self) -> bool {
         self.mode == Mode::Edit
+    }
+
+    /// Types a new name into the rename field and confirms it, as a user would.
+    #[cfg(feature = "screenshots")]
+    pub fn rename_for_tour(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.rename.is_none() {
+            self.start_rename(window, cx);
+        }
+        if let Some(i) = &self.rename {
+            i.update(cx, |i, cx| i.set_value(title.to_string(), window, cx));
+        }
+        self.commit_rename(window, cx);
     }
 
     pub fn path(&self) -> &Path {
@@ -102,10 +188,11 @@ impl NoteView {
         match self.mode {
             Mode::Read => {
                 self.mode = Mode::Edit;
+                self.categories_at_edit = self.categories.clone();
                 self.focus_editor(window, cx);
             }
             Mode::Edit => {
-                self.save_now(cx);
+                self.finish_editing(cx);
                 self.blocks = blocks(&self.text);
                 self.mode = Mode::Read;
                 window.focus(&self.focus, cx);
@@ -130,6 +217,7 @@ impl NoteView {
         match self.file.save(false) {
             Ok(SaveOutcome::Saved) => {
                 self.dirty = false;
+                self.refresh_meta();
                 if let Some(new) = self.core.auto_name_note(&self.file.path) {
                     self.file.path = new.clone();
                     let _ = self.file.reload();
@@ -163,6 +251,7 @@ impl NoteView {
         }
         self.text = self.file.text.clone();
         self.blocks = blocks(&self.text);
+        self.refresh_meta();
         let text = self.text.clone();
         self.editor.update(cx, |e, cx| e.set_value(text, window, cx));
         self.dirty = false;
@@ -217,13 +306,62 @@ impl NoteView {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         let label = if self.mode == Mode::Read { t("edit") } else { t("read") };
+        let left = if let Some(input) = &self.rename {
+            h_flex()
+                .flex_1()
+                .gap_2()
+                .child(div().flex_1().child(Input::new(input).small()))
+                .child(
+                    Button::new("rename-ok")
+                        .small()
+                        .primary()
+                        .label(t("rename-ok"))
+                        .on_click(cx.listener(|this, _, window, cx| this.commit_rename(window, cx))),
+                )
+                .child(Button::new("rename-cancel").small().ghost().label(t("cancel")).on_click(cx.listener(|this, _, window, cx| {
+                    this.rename = None;
+                    window.focus(&this.focus, cx);
+                    cx.notify();
+                })))
+                .into_any_element()
+        } else {
+            let cats = self.core.settings().categories;
+            let mut chips = h_flex().gap_2().flex_wrap();
+            for c in &self.categories {
+                chips = chips.child(
+                    h_flex()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(div().size(px(8.)).rounded_full().bg(crate::theme::tag_color(cats.color_of(c))))
+                        .child(c.clone()),
+                );
+            }
+            h_flex()
+                .flex_1()
+                .min_w(px(0.))
+                .gap_3()
+                .child(div().flex_none().text_xs().text_color(cx.theme().muted_foreground).child(folder))
+                .child(chips)
+                .into_any_element()
+        };
         h_flex()
             .px_6()
             .py_2()
             .gap_2()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(div().flex_1().text_xs().text_color(cx.theme().muted_foreground).child(folder))
+            .child(left)
+            .when(self.rename.is_none(), |el| {
+                el.child(
+                    Button::new("rename")
+                        .small()
+                        .ghost()
+                        .label(t("rename"))
+                        .tooltip(t("rename-note"))
+                        .on_click(cx.listener(|this, _, window, cx| this.start_rename(window, cx))),
+                )
+            })
             .child(
                 Button::new("mode")
                     .small()
@@ -375,10 +513,32 @@ impl Focusable for NoteView {
 
 impl Render for NoteView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _slow = crate::app::SlowGuard(std::time::Instant::now(), "note_view::render");
         v_flex()
             .size_full()
             .track_focus(&self.focus)
             .child(self.render_header(cx))
+            .when_some(self.core.activity(self.path()), |el, a| {
+                let theme = cx.theme().clone();
+                let text = match a {
+                    ln_core::Activity::Connecting => t("activity-connecting"),
+                    ln_core::Activity::Finishing => t("activity-finishing"),
+                    ln_core::Activity::Summarizing => t("activity-summarizing"),
+                };
+                el.child(
+                    h_flex()
+                        .px_6()
+                        .py_2()
+                        .gap_2()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .bg(theme.muted)
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(gpui_kit::component::spinner::Spinner::new().xsmall())
+                        .child(text),
+                )
+            })
             .when(self.conflict, |el| el.child(self.render_conflict(cx)))
             .child(match self.mode {
                 Mode::Read => self.render_reading(cx).into_any_element(),

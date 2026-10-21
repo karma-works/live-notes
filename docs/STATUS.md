@@ -5,6 +5,17 @@ nachmittags prüft der Skill `verify` (`scripts/verify.sh`) die App auch mit **e
 System-Audio** und bedient sie wie ein Nutzer (Menübefehle, Kürzel). Offen bleibt die Bewertung
 von Zusammenfassung und Live-Antworten mit echtem Gemma (kein Schlüssel vorhanden).
 
+## Fehler aus dem zweiten Praxistest (behoben, mit Prüfung)
+
+| Symptom | Ursache | Prüfung |
+|---|---|---|
+| Chinesischer Satz wurde zu langem Unsinn („你好你好…“, englischer Fantasietext) | Verkürztes Encoder-Fenster (`audio_ctx`) ließ Whisper bei kurzen Abschnitten in Schleifen fallen; der Wiederholungsfilter kannte nur Wörter mit Leerzeichen | `ln-bench asr target/test-corpus/hard/*.wav` (2,4-s-Satz und verrauschte Fassung korrekt); Tests in `ln-asr/post.rs` (Zeichen-Wiederholungen, Plausibilität Länge/Dauer) |
+| UI ~5 s eingefroren bei Start und Stopp | Whisper wurde erst beim Start geladen (GPU-Initialisierung); Stopp wartete auf die Transkription; Whisper nutzte alle Kerne | Whisper wird beim App-Start vorgeladen und von allen Aufnahmen geteilt; Start öffnet die Geräte im Hintergrund („verbindet …“), Stopp kehrt sofort zurück, Transkript und Zusammenfassung laufen sichtbar im Hintergrund, eine neue Aufnahme ist sofort möglich; Tests `stop_is_instant…`, Tour `ui_responsive_*` |
+| Zweimal nach „Mikrofon“ gefragt | Die zweite Abfrage ist die macOS-Berechtigung für Systemaudio | Erklärung vor der ersten Aufnahme |
+| „Verbindung testen“ mit frisch eingegebenem Schlüssel schlug fehl; falsche OpenRouter-Schlüssel galten als gültig | Test nutzte nur den gespeicherten Schlüssel; OpenRouter `/models` braucht keinen Schlüssel | Test mit dem eingegebenen Schlüssel gegen `/key`; Schlüssel lassen sich entfernen |
+| „Für den Assistenten fehlt ein API-Schlüssel (OpenRouter)“ trotz ChatGPT-Anmeldung | Fragen und Vorschläge nutzten weiter OpenRouter | Hinweis nennt die Aufgaben; „ChatGPT-Abo verwenden“; nach der Anmeldung wechseln Aufgaben ohne Schlüssel automatisch |
+| Tour las die echten Schlüssel und ChatGPT-Tokens des Nutzers | Tour nutzte den Schlüsselbund | `LN_SECRETS=memory` in `verify.sh` |
+
 ## Fehler aus dem ersten Praxistest (behoben, mit Prüfung)
 
 | Symptom | Ursache | Prüfung |
@@ -19,10 +30,10 @@ von Zusammenfassung und Live-Antworten mit echtem Gemma (kein Schlüssel vorhand
 
 | Prüfung | Ergebnis |
 |---|---|
-| `scripts/verify.sh quick` | 65 Tests grün, Clippy und fmt sauber, `cargo deny` ok |
-| `scripts/verify.sh tour` | 10 Prüfungen der echten App grün (Erststart, Menübefehle, Kürzel, Checkliste inkl. ChatGPT-Anmeldung, getrennte Rollen, Suche, Aufnahme aus Dateien in 5 Sprachen, Transkript in der Notiz) |
+| `scripts/verify.sh quick` | 73 Tests grün, Clippy und fmt sauber, `cargo deny` ok |
+| `scripts/verify.sh tour` | 18 Prüfungen der echten App grün: Erststart, Menübefehle, Kürzel, Einstellungen im Hauptfenster, Zurück/Vorwärts, Checkliste (fehlende Schlüssel mit Aufgaben, ChatGPT-Anmeldung), getrennte Rollen, Suche, Aufnahme aus Dateien in 5 Sprachen, Notiz öffnet sofort nach Stopp, **UI ohne Hänger** (längster Stillstand beim Start 110 ms, beim Transkribieren 74 ms, beim Stopp 21 ms) |
 | `scripts/verify.sh real` | zusätzlich echte Aufnahme: startet per ⌥⌘R-Aktion, System-Audio wird transkribiert, Mikrofon liefert durchgehend Ton |
-| `cargo test --workspace` | 65 Tests grün |
+| `cargo test --workspace` | 73 Tests grün |
 | `cargo clippy --workspace --all-targets -- -D warnings` | keine Befunde (auch mit `--features screenshots`) |
 | `cargo fmt --check` | sauber |
 | `cargo deny check` | Lizenzen, Sicherheitsmeldungen, Netzwerkregel (§11) ok |
@@ -51,6 +62,7 @@ von Zusammenfassung und Live-Antworten mit echtem Gemma (kein Schlüssel vorhand
 | F8 | Live-Vorschläge (Auslöser, Anfrage per Modell bzw. Rückfall, Suche, Kurzantwort, Anheften, Verwerfen) | umgesetzt | Tour (ohne Modell-Schlüssel, also Rückfallweg) |
 | F9 | Menüleisten-Symbol, globales Kürzel ⌥⌘R | umgesetzt | App startet stabil; Klicks nicht automatisiert getestet |
 | F10 | Markdown lesen (GFM, Tabellen, Code, anklickbare Aufgaben, Transkriptzeilen, leere Abschnitte ausgeblendet) und bearbeiten (Hervorhebung, Autospeichern, Konflikte, Umbenennen nach Überschrift) | umgesetzt | Tests + Screenshots |
+| F11 | Kategorien mit macOS-Tag-Farben, Einordnung per Entscheidungsmodell (ein Aufruf pro Notiz; OpenRouter `typesafe/jev-1.14` vor OpenAI `gpt-6-luna`), Farbpunkte in Liste und Kopfzeile, Umbenennen von Hand | umgesetzt | Tests gegen Nachbau-Server (OpenRouter- und OpenAI-Format); **ein echter Aufruf an Jev 1.14 über OpenRouter** (0,7 s, 0,000026 $). OpenAI-Decisions-API nicht gegen das Original geprüft (kein Schlüssel) |
 | §4 | Ein-Bildschirm-Start mit Download im Hintergrund, Fortsetzen nach Abbruch, SHA-256 | umgesetzt | Tests + echter Download |
 
 ## Abweichungen von der Spezifikation

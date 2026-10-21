@@ -20,6 +20,7 @@ pub struct Settings {
     pub privacy: Privacy,
     pub costs: Costs,
     pub sources: Vec<SourceSetting>,
+    pub categories: Categories,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -298,6 +299,108 @@ pub struct Costs {
     pub monthly_limit_usd: f64,
 }
 
+/// Colours of the macOS Finder tags; each note category gets one.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TagColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    #[default]
+    Blue,
+    Purple,
+    Gray,
+}
+
+impl TagColor {
+    pub const ALL: [TagColor; 7] =
+        [TagColor::Red, TagColor::Orange, TagColor::Yellow, TagColor::Green, TagColor::Blue, TagColor::Purple, TagColor::Gray];
+
+    /// The macOS system colour as `0xRRGGBB`.
+    pub fn rgb(self) -> u32 {
+        match self {
+            TagColor::Red => 0xFF3B30,
+            TagColor::Orange => 0xFF9500,
+            TagColor::Yellow => 0xFFCC00,
+            TagColor::Green => 0x34C759,
+            TagColor::Blue => 0x007AFF,
+            TagColor::Purple => 0xAF52DE,
+            TagColor::Gray => 0x8E8E93,
+        }
+    }
+
+    /// The colour after this one, for cycling through them.
+    pub fn next(self) -> TagColor {
+        let i = TagColor::ALL.iter().position(|c| *c == self).unwrap_or(0);
+        TagColor::ALL[(i + 1) % TagColor::ALL.len()]
+    }
+}
+
+/// A user-defined note category, e.g. "Chinesisch-Kurs".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Category {
+    pub name: String,
+    #[serde(default)]
+    pub color: TagColor,
+    /// Optional hint for the decision model: what belongs here.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+}
+
+/// Which API serves the decision model.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionProvider {
+    /// OpenRouter when its key is set, otherwise OpenAI.
+    #[default]
+    Auto,
+    OpenRouter,
+    OpenAi,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Categories {
+    pub list: Vec<Category>,
+    /// Sort new and saved notes and new transcripts into categories automatically.
+    pub auto_assign: bool,
+    pub provider: DecisionProvider,
+    /// Decision model on OpenRouter (`POST /api/alpha/decisions`).
+    pub openrouter_model: String,
+    /// Model for OpenAI's Decisions API (`POST /v1/decisions`).
+    pub openai_model: String,
+    /// A category is assigned from this probability on.
+    pub threshold: f32,
+}
+
+impl Default for Categories {
+    fn default() -> Self {
+        Categories {
+            list: vec![],
+            auto_assign: true,
+            provider: DecisionProvider::Auto,
+            openrouter_model: "typesafe/jev-1.14".into(),
+            openai_model: "gpt-6-luna".into(),
+            threshold: 0.5,
+        }
+    }
+}
+
+impl Categories {
+    pub fn color_of(&self, name: &str) -> Option<TagColor> {
+        self.list.iter().find(|c| c.name == name).map(|c| c.color)
+    }
+
+    /// The first colour not used yet, so new categories are easy to tell apart.
+    pub fn next_color(&self) -> TagColor {
+        TagColor::ALL
+            .into_iter()
+            .find(|c| !self.list.iter().any(|x| x.color == *c))
+            .unwrap_or(TagColor::ALL[self.list.len() % TagColor::ALL.len()])
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceSetting {
     pub path: PathBuf,
@@ -334,6 +437,7 @@ impl Default for Settings {
             privacy: Privacy::default(),
             costs: Costs::default(),
             sources: vec![],
+            categories: Categories::default(),
         }
     }
 }
@@ -492,6 +596,24 @@ mod tests {
         assert_eq!(s.transcription.mode, TranscriptionMode::OpenAiCheap);
         assert_eq!(s.transcription.openai_model, "gpt-transcribe");
         assert_eq!(s.roles.assistant.model, "google/gemma-4-26b-a4b-it");
+    }
+
+    #[test]
+    fn categories_roundtrip_and_colors() {
+        let s: Settings = toml::from_str(
+            "[categories]\nprovider = \"open_ai\"\n[[categories.list]]\nname = \"Chinesisch-Kurs\"\ncolor = \"red\"\n[[categories.list]]\nname = \"Arztagent\"\n",
+        )
+        .unwrap();
+        assert_eq!(s.categories.provider, DecisionProvider::OpenAi);
+        assert_eq!(s.categories.openrouter_model, "typesafe/jev-1.14");
+        assert!(s.categories.auto_assign);
+        assert_eq!(s.categories.color_of("Chinesisch-Kurs"), Some(TagColor::Red));
+        assert_eq!(s.categories.color_of("Arztagent"), Some(TagColor::Blue));
+        assert_eq!(s.categories.color_of("Unbekannt"), None);
+        assert_eq!(s.categories.next_color(), TagColor::Orange);
+        assert_eq!(TagColor::Gray.next(), TagColor::Red);
+        let back: Settings = toml::from_str(&toml::to_string_pretty(&s).unwrap()).unwrap();
+        assert_eq!(back.categories, s.categories);
     }
 
     #[test]

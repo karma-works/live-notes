@@ -55,6 +55,8 @@ pub enum CoreEvent {
     ChatGptChanged {
         first_sign_in: bool,
     },
+    /// A note's background work changed (see `Core::activity`).
+    ActivityChanged,
     /// Short user-facing message (already localised).
     Notice(String),
 }

@@ -26,6 +26,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin"
 cp "$BIN" "$APP/Contents/MacOS/live-notes"
 sed "s/__VERSION__/$VERSION/g" packaging/Info.plist > "$APP/Contents/Info.plist"
+cp packaging/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 if [[ -n "${LN_LLAMA_SERVER:-}" ]]; then
   cp "$LN_LLAMA_SERVER" "$APP/Contents/Resources/bin/llama-server"
 fi

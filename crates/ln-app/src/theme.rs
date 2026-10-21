@@ -15,3 +15,8 @@ pub fn channel_color(channel: ln_types::Channel, cx: &App) -> Hsla {
         ln_types::Channel::Others => cx.theme().success,
     }
 }
+
+/// A category's macOS tag colour; categories that are no longer in the list are grey.
+pub fn tag_color(color: Option<ln_types::TagColor>) -> Hsla {
+    rgb(color.unwrap_or(ln_types::TagColor::Gray).rgb()).into()
+}

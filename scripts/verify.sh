@@ -49,7 +49,7 @@ run_tour() { # $1 = stage name, extra env as further args
   corpus
   bundle
   # `open` makes the app bundle the responsible process, so its own permissions apply.
-  open -n -W --env LN_DATA_DIR="$data/data" --env LN_NOTES_DIR="$data/notes" --env LN_UI_LANG="${LN_UI_LANG:-de}" \
+  open -n -W --env LN_SECRETS=memory ${LN_EXTRA_ENV:-} --env LN_DATA_DIR="$data/data" --env LN_NOTES_DIR="$data/notes" --env LN_UI_LANG="${LN_UI_LANG:-de}" \
     --env LN_SCREENSHOT_DIR="$dir" --env LN_DEMO_AUDIO_ME="$CORPUS/demo-me.wav" --env LN_DEMO_AUDIO_OTHERS="$CORPUS/demo-others.wav" \
     "$@" "$APP"
   echo "report: $dir/tour-report.json"

@@ -203,6 +203,7 @@ impl RecordingView {
 
 impl Render for RecordingView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _slow = crate::app::SlowGuard(std::time::Instant::now(), "recording_view::render");
         let info = self.core.recording_info();
         let theme = cx.theme().clone();
         let ui = crate::i18n::language();
@@ -217,6 +218,7 @@ impl Render for RecordingView {
             .as_ref()
             .map(|i| (i.elapsed.as_secs(), i.paused, i.level_me, i.level_others, i.cloud))
             .unwrap_or((0, false, 0.0, 0.0, false));
+        let connecting = info.as_ref().is_some_and(|i| i.connecting);
         let suggestions = self.core.settings().live_suggestions.enabled;
         h_flex()
             .size_full()
@@ -234,7 +236,19 @@ impl Render for RecordingView {
                             .border_color(theme.border)
                             .child(div().text_color(theme.danger).child("●"))
                             .child(div().font_semibold().child(t("recording")))
-                            .child(div().text_color(theme.muted_foreground).child(format!("{:02}:{:02}", elapsed / 60, elapsed % 60)))
+                            .when(connecting, |el| {
+                                el.child(
+                                    h_flex()
+                                        .gap_2()
+                                        .text_sm()
+                                        .text_color(theme.muted_foreground)
+                                        .child(gpui_kit::component::spinner::Spinner::new().xsmall())
+                                        .child(t("activity-connecting")),
+                                )
+                            })
+                            .when(!connecting, |el| {
+                                el.child(div().text_color(theme.muted_foreground).child(format!("{:02}:{:02}", elapsed / 60, elapsed % 60)))
+                            })
                             .child(div().text_xs().text_color(theme.muted_foreground).child(langs.join(" · ")))
                             .child(div().flex_1())
                             .when(cloud, |el| {

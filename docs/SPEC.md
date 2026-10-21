@@ -345,6 +345,32 @@ Minute im Modus „normal“.
 - Links: interne Links auf andere `.md` öffnen in der App, externe im Browser.
 - Große Dateien (> 1 MB) werden virtualisiert gerendert; Ziel: 10.000-Zeilen-Notiz öffnet in < 150 ms.
 
+### F11 Kategorien (automatisch eingeordnet)
+
+- Der Nutzer legt in den Einstellungen Kategorien an, z. B. „Chinesisch-Kurs“, „Arztagent“
+  (Hinweis: „Ideen für neue Anforderungen“), „KI-Projekte“, „Französisch lernen“. Jede Kategorie
+  bekommt eine Farbe der macOS-Tags (Rot, Orange, Gelb, Grün, Blau, Lila, Grau); ein Klick auf den
+  Farbpunkt wechselt sie.
+- Eingeordnet wird von einem **Entscheidungsmodell** (gibt Wahrscheinlichkeiten für feste Antworten
+  statt Text): **ein Aufruf pro Notiz** mit einer Ja/Nein-Frage je Kategorie; zugeordnet wird ab
+  Wahrscheinlichkeit 0,5, auch mehrere Kategorien.
+  - OpenRouter: `POST /api/alpha/decisions`, Fragetyp `noul`; Standardmodell `typesafe/jev-1.14`.
+  - OpenAI: `POST /v1/decisions`, Fragetyp `predicate`; Modell `gpt-6-luna`.
+  - „Automatisch“ (Standard) nimmt OpenRouter, wenn dessen Schlüssel hinterlegt ist, sonst OpenAI. Das
+    ChatGPT-Abo deckt die Decisions-API nicht ab.
+- Wann: beim Verlassen des Bearbeitens (⌘E oder Wechsel zu einer anderen Notiz), wenn sich der Text
+  geändert hat; nach jeder Aufnahme (nach der Zusammenfassung). Unveränderter Inhalt wird nicht erneut
+  geschickt. Hat der Nutzer die Kategorien beim Bearbeiten selbst geändert, bleiben sie. Ein Knopf ordnet
+  bestehende Notizen ohne Kategorie nach.
+- Gespeichert im Front-Matter der Notiz (`categories:`); eine schlichte Markdown-Notiz bekommt erst dann
+  ein Front-Matter, wenn es eine Kategorie gibt. Von Hand eingetragene Kategorien außerhalb der Liste
+  bleiben erhalten.
+- Anzeige: überlappende Farbpunkte in der Notizliste (wie Finder-Tags), Farbpunkt + Name in der
+  Kopfzeile der Notiz.
+- **Umbenennen von Hand:** Knopf „Umbenennen“ in der Kopfzeile oder Doppelklick in der Notizliste.
+  Ändert den Namen in der Liste (Titel im Front-Matter bzw. erste Überschrift) und den Dateinamen;
+  Aufnahmen behalten ihr Datum im Dateinamen und werden danach nie mehr automatisch umbenannt.
+
 ## 6. Bedienoberfläche
 
 ### 6.1 Gestaltungsgrundsätze

@@ -36,4 +36,25 @@ me += silence(L(others) - L(me) + 1.5); others += silence(1.5)
 for name, data in [("demo-me.wav", me), ("demo-others.wav", others)]:
     w = wave.open(name, "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(data); w.close()
 PY
+# Hard cases (regression for Whisper loops on short sections): a 2.4 s Chinese sentence, the same
+# quiet with hum and noise, and noise bursts without speech.
+mkdir -p hard
+say -v Tingting -o hard/zh-short.aiff "你好。我今天去上班。"
+afconvert -f WAVE -d LEI16@16000 -c 1 hard/zh-short.aiff hard/zh-short-clean.wav && rm hard/zh-short.aiff
+python3 - <<'PY'
+import array, math, random, wave
+random.seed(7)
+rate = 16000
+w = wave.open("hard/zh-short-clean.wav"); sp = array.array("h", w.readframes(w.getnframes())); w.close()
+def noise(sec, amp): return [random.gauss(0, amp) for _ in range(int(sec * rate))]
+def write(name, xs):
+    o = wave.open(name, "wb"); o.setnchannels(1); o.setsampwidth(2); o.setframerate(rate)
+    o.writeframes(array.array("h", [max(-32767, min(32767, int(x))) for x in xs]).tobytes()); o.close()
+body = noise(5, 250) + [x * 0.35 + random.gauss(0, 250) for x in sp] + noise(6, 250)
+write("hard/zh-short-noisy.wav", [x + 300 * math.sin(2 * math.pi * 50 * i / rate) for i, x in enumerate(body)])
+bursts = []
+for _ in range(4):
+    bursts += noise(1.0, 150) + noise(1.5, 2500)
+write("hard/noise-bursts.wav", bursts + noise(1, 150))
+PY
 echo "Corpus in $OUT"
