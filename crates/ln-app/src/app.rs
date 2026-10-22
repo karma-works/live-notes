@@ -338,6 +338,18 @@ impl AppView {
         cx.notify();
     }
 
+    /// A Markdown file the system asked us to open (Finder, "Open With", default app). Files
+    /// outside the notes folder open in place: edited and saved where they are, but not listed,
+    /// indexed, renamed or sorted into categories.
+    pub(crate) fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let path = path.canonicalize().unwrap_or(path);
+        if !path.is_file() {
+            window.push_notification(t("open-file-failed"), cx);
+            return;
+        }
+        self.open_note(path, window, cx);
+    }
+
     fn load_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(n) = &self.note {
             n.update(cx, |n, cx| n.finish_editing(cx));
@@ -1126,6 +1138,13 @@ impl AppView {
                             let path = path.clone();
                             move |_, _, cx| cx.reveal_path(&path)
                         }))
+                        .item(PopupMenuItem::new(t("copy-path")).on_click({
+                            let path = path.clone();
+                            move |_, window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
+                                window.push_notification(t("copied-path"), cx);
+                            }
+                        }))
                         // The action only shows the shortcut; the handler deletes this note.
                         .item(PopupMenuItem::new(t("delete-note-menu")).action(Box::new(DeleteNote)).on_click({
                             let (weak, path) = (weak.clone(), path.clone());
@@ -1290,6 +1309,7 @@ impl Render for AppView {
                 if let Some(n) = &this.note
                     && matches!(this.selected, Selected::Note(_))
                     && !window.has_active_dialog(cx)
+                    && !n.read(cx).is_external()
                 {
                     n.update(cx, |n, cx| n.delete(window, cx));
                 }

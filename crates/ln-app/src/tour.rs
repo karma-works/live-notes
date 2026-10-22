@@ -318,6 +318,42 @@ pub fn run(core: Arc<Core>, handle: AnyWindowHandle, view: Entity<AppView>, cx: 
             use gpui_kit::component::WindowExt as _;
             window.close_all_dialogs(cx);
         });
+
+        // 4e. A Markdown file from outside the notes folder (Finder "Open With") opens in place:
+        //     no delete, the copy button puts its Markdown on the clipboard.
+        let ext = dir.join("Externe Datei.md");
+        let ext_text = "# Externe Datei\n\nAus dem **Finder** geöffnet.\n";
+        let _ = std::fs::write(&ext, ext_text);
+        let _ = cx.update_window(handle, |_, window, cx| view.update(cx, |v, cx| v.open_file(ext.clone(), window, cx)));
+        wait(cx, 800).await;
+        let opened = view.read_with(cx, |v, cx| v.note_view().map(|n| (n.read(cx).path().to_path_buf(), n.read(cx).is_external())));
+        let want = ext.canonicalize().unwrap_or(ext.clone());
+        r.check("finder_file_opens_in_place", opened == Some((want, true)), format!("{opened:?}"));
+        shot(cx, handle, &dir, "04c-external-file");
+        let _ = cx.update_window(handle, |_, window, cx| {
+            window.focus(&view.focus_handle(cx), cx);
+            window.dispatch_keystroke(Keystroke::parse("backspace").expect("key"), cx);
+        });
+        wait(cx, 400).await;
+        let asks = cx.update_window(handle, |_, window, cx| {
+            use gpui_kit::component::WindowExt as _;
+            window.has_active_dialog(cx)
+        });
+        r.check("external_file_not_deletable", matches!(asks, Ok(false)) && ext.exists(), format!("{asks:?}"));
+        let before = cx.update(|cx| cx.read_from_clipboard());
+        let _ = cx.update_window(handle, |_, window, cx| {
+            if let Some(n) = view.read(cx).note_view() {
+                n.update(cx, |n, cx| n.copy_for_tour(window, cx));
+            }
+        });
+        let copied = cx.update(|cx| cx.read_from_clipboard().and_then(|c| c.text()));
+        r.check("copy_button_copies_markdown", copied.as_deref() == Some(ext_text), format!("{:?}", copied.map(|c| c.len())));
+        if let Some(item) = before {
+            cx.update(|cx| cx.write_to_clipboard(item));
+        }
+        let _ = std::fs::remove_file(&ext);
+        dispatch(cx, handle, crate::GoBack);
+        wait(cx, 400).await;
         wait(cx, 300).await;
         dispatch(cx, handle, crate::ToggleEdit);
         wait(cx, 600).await;

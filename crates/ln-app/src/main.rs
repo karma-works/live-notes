@@ -74,7 +74,17 @@ fn main() {
     i18n::set_language(core.ui_language());
     core.resume_downloads();
 
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
+    // Markdown files opened from the Finder ("Open With", default app, drag onto the Dock icon)
+    // arrive as file:// URLs, also before the window exists; the window picks them up in order.
+    let (open_tx, mut open_rx) = futures::channel::mpsc::unbounded::<std::path::PathBuf>();
+    let application = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+    application.on_open_urls(move |urls| {
+        for path in urls.iter().filter_map(|u| file_url_to_path(u)) {
+            tracing::info!("open file from system");
+            let _ = open_tx.unbounded_send(path);
+        }
+    });
+    application.run(move |cx| {
         gpui_kit::init(cx);
         theme::apply(cx);
         cx.bind_keys([
@@ -167,12 +177,48 @@ fn main() {
         fallback!(NewNote, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.new_note(w, cx));
         fallback!(ToggleRecording, |v: &mut app::AppView, w: &mut Window, cx: &mut Context<app::AppView>| v.toggle_recording(w, cx));
         fallback!(ShowSources, |v: &mut app::AppView, _w: &mut Window, cx: &mut Context<app::AppView>| v.show_sources(cx));
+        {
+            let view = _view.clone();
+            cx.spawn(async move |cx| {
+                use futures::StreamExt as _;
+                while let Some(path) = open_rx.next().await {
+                    let _ = _handle.update(cx, |_, window, cx| {
+                        window.activate_window();
+                        view.update(cx, |v, cx| v.open_file(path, window, cx))
+                    });
+                }
+            })
+            .detach();
+        }
         hotkey::install(_handle, _view.clone(), cx);
         tray::install(core.clone(), _handle, _view.clone(), cx);
         #[cfg(feature = "screenshots")]
         tour::run(core.clone(), _handle, _view, cx);
         cx.activate(true);
     });
+}
+
+/// `file:///Users/me/My%20Notes/a.md` → `/Users/me/My Notes/a.md`. Other schemes are ignored.
+fn file_url_to_path(url: &str) -> Option<std::path::PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    // An optional host (`file://localhost/...`) comes before the path.
+    let path = &rest[rest.find('/')?..];
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(b) = path.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(b);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    use std::os::unix::ffi::OsStringExt as _;
+    Some(std::path::PathBuf::from(std::ffi::OsString::from_vec(out)))
 }
 
 /// Logs to `~/Library/Logs/Live Notes/live-notes.log` (and stderr). No transcript content is logged.
@@ -186,5 +232,18 @@ fn init_logging(paths: &ln_types::AppPaths) {
     match file {
         Some(f) => registry.with(fmt::layer().with_ansi(false).with_writer(std::sync::Mutex::new(f))).init(),
         None => registry.init(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_url_to_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn file_urls_become_paths() {
+        assert_eq!(file_url_to_path("file:///Users/me/My%20Notes/%C3%84rger.md"), Some(PathBuf::from("/Users/me/My Notes/Ärger.md")));
+        assert_eq!(file_url_to_path("file://localhost/tmp/a.md"), Some(PathBuf::from("/tmp/a.md")));
+        assert_eq!(file_url_to_path("https://example.com/a.md"), None);
     }
 }

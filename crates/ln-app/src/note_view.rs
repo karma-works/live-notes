@@ -52,6 +52,9 @@ pub struct NoteView {
     categories_at_edit: Vec<String>,
     /// Inline rename field in the header.
     rename: Option<Entity<InputState>>,
+    /// The file lies outside the notes folder (opened from the Finder): it is edited in place
+    /// and never renamed, sorted into categories or deleted by the app.
+    external: bool,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -75,7 +78,8 @@ impl NoteView {
         });
         // An empty new note starts in the editor.
         let mode = if text.trim() == "#" || text.trim().is_empty() { Mode::Edit } else { Mode::Read };
-        let additions = core.pending_additions(path);
+        let external = !path.starts_with(core.notes_dir());
+        let additions = if external { vec![] } else { core.pending_additions(path) };
         let mut v = NoteView {
             core,
             blocks: blocks(&text),
@@ -92,6 +96,7 @@ impl NoteView {
             edited: false,
             categories_at_edit: vec![],
             rename: None,
+            external,
             focus: cx.focus_handle(),
             _subs: vec![sub],
         };
@@ -120,7 +125,7 @@ impl NoteView {
         }
         self.edited = false;
         self.refresh_meta();
-        if self.categories == self.categories_at_edit {
+        if self.categories == self.categories_at_edit && !self.external {
             self.core.classify_note(&self.file.path);
         }
         self.categories_at_edit = self.categories.clone();
@@ -185,6 +190,21 @@ impl NoteView {
         self.commit_rename(window, cx);
     }
 
+    pub fn is_external(&self) -> bool {
+        self.external
+    }
+
+    /// Puts the note's Markdown text, exactly as in the file, on the clipboard.
+    fn copy_markdown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(self.text.clone()));
+        window.push_notification(t("copied-markdown"), cx);
+    }
+
+    #[cfg(feature = "screenshots")]
+    pub fn copy_for_tour(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.copy_markdown(window, cx);
+    }
+
     pub fn path(&self) -> &Path {
         &self.file.path
     }
@@ -227,7 +247,10 @@ impl NoteView {
             Ok(SaveOutcome::Saved) => {
                 self.dirty = false;
                 self.refresh_meta();
-                if let Some(new) = self.core.auto_name_note(&self.file.path) {
+                // Files outside the notes folder keep their name.
+                if !self.external
+                    && let Some(new) = self.core.auto_name_note(&self.file.path)
+                {
                     self.file.path = new.clone();
                     let _ = self.file.reload();
                     cx.emit(NoteViewEvent::Moved(Some(new)));
@@ -284,6 +307,9 @@ impl NoteView {
     }
 
     pub fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.external {
+            return;
+        }
         let path = self.file.path.clone();
         let core = self.core.clone();
         let me = cx.entity().downgrade();
@@ -313,7 +339,7 @@ impl NoteView {
             .parent()
             .and_then(|p| p.strip_prefix(self.core.notes_dir()).ok())
             .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .unwrap_or_else(|| self.file.path.parent().map(home_relative).unwrap_or_default());
         let label = if self.mode == Mode::Read { t("edit") } else { t("read") };
         let left = if let Some(input) = &self.rename {
             h_flex()
@@ -334,7 +360,7 @@ impl NoteView {
                 })))
                 .into_any_element()
         } else {
-            let cats = self.core.settings().categories;
+            let cats = if self.external { Default::default() } else { self.core.settings().categories };
             let mut chips = h_flex().gap_2().flex_wrap().items_center();
             for (i, c) in self.categories.iter().enumerate() {
                 let name = c.clone();
@@ -399,7 +425,7 @@ impl NoteView {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(left)
-            .when(self.rename.is_none(), |el| {
+            .when(self.rename.is_none() && !self.external, |el| {
                 el.child(
                     Button::new("rename")
                         .small()
@@ -418,6 +444,14 @@ impl NoteView {
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_mode(window, cx))),
             )
             .child(
+                Button::new("copy-markdown")
+                    .small()
+                    .ghost()
+                    .icon(IconName::Copy)
+                    .tooltip(t("copy-markdown"))
+                    .on_click(cx.listener(|this, _, window, cx| this.copy_markdown(window, cx))),
+            )
+            .child(
                 Button::new("reveal")
                     .small()
                     .ghost()
@@ -425,14 +459,16 @@ impl NoteView {
                     .tooltip(t("reveal"))
                     .on_click(cx.listener(|this, _, _, cx| cx.reveal_path(&this.file.path))),
             )
-            .child(
-                Button::new("delete")
-                    .small()
-                    .ghost()
-                    .icon(IconName::Delete)
-                    .tooltip_with_action(t("delete-note-menu"), &crate::DeleteNote, None)
-                    .on_click(cx.listener(|this, _, window, cx| this.delete(window, cx))),
-            )
+            .when(!self.external, |el| {
+                el.child(
+                    Button::new("delete")
+                        .small()
+                        .ghost()
+                        .icon(IconName::Delete)
+                        .tooltip_with_action(t("delete-note-menu"), &crate::DeleteNote, None)
+                        .on_click(cx.listener(|this, _, window, cx| this.delete(window, cx))),
+                )
+            })
     }
 
     fn render_conflict(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -597,5 +633,13 @@ impl Render for NoteView {
                     .child(Editor::new(&self.editor).appearance(false).h(relative(1.)))
                     .into_any_element(),
             })
+    }
+}
+
+/// `/Users/me/Documents` → `~/Documents`, for the header of files outside the notes folder.
+fn home_relative(dir: &Path) -> String {
+    match std::env::var_os("HOME").map(PathBuf::from) {
+        Some(home) if dir.starts_with(&home) => format!("~/{}", dir.strip_prefix(&home).unwrap_or(dir).display()),
+        _ => dir.display().to_string(),
     }
 }
