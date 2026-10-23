@@ -336,7 +336,10 @@ fn make_section(kind: SectionKind, lines: &[&str]) -> Section {
 }
 
 fn split_front_matter(text: &str) -> Result<(Option<FrontMatter>, &str)> {
-    let Some(rest) = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n")) else {
+    // Blank lines typed above the front matter must not hide it: the note would lose its date
+    // (and sort by modification time), and categories would get a second front matter on top.
+    let start = text.trim_start_matches(['\n', '\r', ' ', '\t']);
+    let Some(rest) = start.strip_prefix("---\n").or_else(|| start.strip_prefix("---\r\n")) else {
         return Ok((None, text));
     };
     let mut offset = 0;
@@ -404,6 +407,14 @@ mod tests {
         assert_eq!(lines[1].channel(&n.speakers()), Some(Channel::Others));
         let again = Note::parse(&n.render()).unwrap();
         assert_eq!(again, n);
+    }
+
+    #[test]
+    fn blank_lines_above_front_matter_do_not_hide_it() {
+        let n = Note::parse(&format!("\n\n{SAMPLE}")).unwrap();
+        assert_eq!(n.title().unwrap(), "Teamrunde Budget");
+        assert!(n.render().starts_with("---\n"), "the blank lines go away on the next save");
+        assert_eq!(Note::parse("\n\n---\nkein Front Matter").unwrap().front, None);
     }
 
     #[test]
