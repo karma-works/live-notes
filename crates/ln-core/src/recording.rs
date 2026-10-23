@@ -629,11 +629,21 @@ fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name:
     let mut load_failed = false;
     let mut current_session = 0u64;
     let mut fell_back = false;
+    let mut background = false;
+    // A job taken from the queue while collecting sections to pack, handled next.
+    let mut stash: Option<AsrJob> = None;
     let new_engine = |t: Box<dyn Transcriber>| {
         let s = core.settings();
         AsrEngine::new(t, PostProcessor::new(s.languages.chinese_script), s.languages.mine.clone())
     };
-    while let Ok(job) = rx.recv() {
+    loop {
+        let job = match stash.take() {
+            Some(j) => j,
+            None => match rx.recv() {
+                Ok(j) => j,
+                Err(_) => break,
+            },
+        };
         // Load lazily: the first job (usually `Warm` at startup) pays for it.
         if engine.is_none()
             && !load_failed
@@ -674,52 +684,65 @@ fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name:
             AsrJob::Warm => {}
             AsrJob::Section(ctx, p) => {
                 let Some(e) = engine.as_mut() else { continue };
-                let mut r = e.process(&p, None);
-                if r.is_err() && cloud && !fell_back {
-                    // SPEC §5 F2: fall back to local transcription when the cloud fails.
-                    if let Ok(local) = core.local_transcriber() {
-                        *name.lock() = local.name();
-                        *e = new_engine(local);
-                        fell_back = true;
-                        core.emit(CoreEvent::Notice(tr(
-                            core.ui_language(),
-                            "Keine Verbindung zu OpenAI – es wird lokal weiter transkribiert.",
-                            "Lost connection to OpenAI – transcribing locally now.",
-                        )));
-                        core.emit(CoreEvent::RecordingChanged);
-                        r = e.process(&p, None);
-                    }
+                // No recording running: the rest of a stopped recording may take its time, but must
+                // not load the machine (low thread priority, fewer threads, pauses between runs).
+                let bg = !cloud && core.recording.lock().is_none();
+                if bg != background {
+                    background = bg;
+                    ln_platform::set_current_thread_background(bg);
+                    e.transcriber_mut().set_background(bg);
+                    tracing::info!("asr: background mode {}", if bg { "on" } else { "off" });
                 }
-                if cloud && !fell_back {
-                    *ctx.cloud_seconds.lock() += (p.end_ms - p.start_ms) as f64 / 1000.0;
-                }
-                match r {
-                    Ok(Some(seg)) => {
-                        // Lock order everywhere: `recording` before `state` (the UI does the same).
-                        let live = core.recording.lock().as_ref().is_some_and(|s| s.id == ctx.id);
-                        let mut st = ctx.state.lock();
-                        let index = st.segments.len();
-                        st.segments.push(seg.clone());
-                        if let Some(j) = st.journal.as_mut() {
-                            let _ = j.append(&JournalEntry::Segment(seg.clone()));
-                        }
-                        st.ring.push(index, p);
-                        if st.last_write.elapsed() > Duration::from_secs(10) {
-                            st.last_write = Instant::now();
-                            let _ = write_note(core, &ctx.note_path, &st, ctx.created, None, &name.lock());
-                        }
-                        // Live suggestions only while this recording runs.
-                        let trigger = if live { st.suggester.observe(&seg, &core.settings().live_suggestions) } else { None };
-                        drop(st);
-                        if live {
-                            core.emit(CoreEvent::Segment { index, segment: seg });
-                        }
-                        if let Some(t) = trigger {
-                            crate::suggest::spawn(core, t, ctx.note_path.clone(), ctx.note_id.clone(), ctx.state.clone());
+                let t0 = Instant::now();
+                let results = if cloud && !fell_back {
+                    let mut r = e.process(&p, None);
+                    if r.is_err() {
+                        // SPEC §5 F2: fall back to local transcription when the cloud fails.
+                        if let Ok(local) = core.local_transcriber() {
+                            *name.lock() = local.name();
+                            *e = new_engine(local);
+                            fell_back = true;
+                            core.emit(CoreEvent::Notice(tr(
+                                core.ui_language(),
+                                "Keine Verbindung zu OpenAI – es wird lokal weiter transkribiert.",
+                                "Lost connection to OpenAI – transcribing locally now.",
+                            )));
+                            core.emit(CoreEvent::RecordingChanged);
+                            r = e.process(&p, None);
                         }
                     }
-                    Ok(None) => {}
-                    Err(e) => tracing::warn!("transcription failed: {e}"),
+                    if !fell_back {
+                        *ctx.cloud_seconds.lock() += (p.end_ms - p.start_ms) as f64 / 1000.0;
+                    }
+                    vec![(p, r)]
+                } else {
+                    // Sections already waiting in the queue are packed into fewer Whisper runs.
+                    let mut batch = vec![p];
+                    let mut queued_ms = 0;
+                    while queued_ms < PACK_QUEUE_MS {
+                        match rx.try_recv() {
+                            Ok(AsrJob::Section(c, q)) if c.id == ctx.id => {
+                                queued_ms += q.end_ms - q.start_ms;
+                                batch.push(q);
+                            }
+                            Ok(other) => {
+                                stash = Some(other);
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    if batch.len() > 1 {
+                        tracing::debug!("asr: {} queued sections in one batch", batch.len());
+                    }
+                    e.process_packed(batch)
+                };
+                for (p, r) in results {
+                    deliver(core, &ctx, p, r, name);
+                }
+                if background {
+                    // Leave the GPU and CPU idle for a third of the time.
+                    std::thread::sleep((t0.elapsed() / 2).min(Duration::from_secs(5)));
                 }
             }
             AsrJob::Redo(ctx, index, lang) => {
@@ -767,6 +790,44 @@ fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name:
                 }
             }
         }
+    }
+}
+
+/// Audio taken from the queue at once for packing (`AsrEngine::process_packed`).
+const PACK_QUEUE_MS: u64 = 90_000;
+
+/// Stores a transcribed section: transcript, journal, audio for language corrections, note file.
+fn deliver(core: &Arc<Core>, ctx: &Arc<Ctx>, p: PendingSegment, r: ln_asr::Result<Option<Segment>>, name: &Arc<Mutex<String>>) {
+    match r {
+        Ok(Some(seg)) => {
+            // Lock order everywhere: `recording` before `state` (the UI does the same).
+            let live = core.recording.lock().as_ref().is_some_and(|s| s.id == ctx.id);
+            let mut st = ctx.state.lock();
+            let index = st.segments.len();
+            st.segments.push(seg.clone());
+            if let Some(j) = st.journal.as_mut() {
+                let _ = j.append(&JournalEntry::Segment(seg.clone()));
+            }
+            st.ring.push(index, p);
+            // After the stop nobody reads along: rewriting the note (and the UI reloading it)
+            // once a minute is enough; the journal keeps every section safe meanwhile.
+            let every = if live { Duration::from_secs(10) } else { Duration::from_secs(60) };
+            if st.last_write.elapsed() > every {
+                st.last_write = Instant::now();
+                let _ = write_note(core, &ctx.note_path, &st, ctx.created, None, &name.lock());
+            }
+            // Live suggestions only while this recording runs.
+            let trigger = if live { st.suggester.observe(&seg, &core.settings().live_suggestions) } else { None };
+            drop(st);
+            if live {
+                core.emit(CoreEvent::Segment { index, segment: seg });
+            }
+            if let Some(t) = trigger {
+                crate::suggest::spawn(core, t, ctx.note_path.clone(), ctx.note_id.clone(), ctx.state.clone());
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("transcription failed: {e}"),
     }
 }
 

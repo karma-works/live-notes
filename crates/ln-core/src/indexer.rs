@@ -80,7 +80,10 @@ fn run(weak: Weak<Core>, rx: Receiver<Cmd>) {
             default(timeout) => {},
         }
         let Some(core) = weak.upgrade() else { return };
-        if core.recording_active() {
+        // Transcription has priority, also while a stopped recording is still being finished and
+        // summarised: its note changes every minute and would be indexed and embedded again and
+        // again. The changed files wait in `pending` and are indexed once afterwards.
+        if core.recording_active() || !core.activities.lock().is_empty() {
             continue;
         }
         if resync_needed {
@@ -262,22 +265,60 @@ fn embed_pending(core: &Arc<Core>, rx: &Receiver<Cmd>) {
             return;
         }
         let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
-        match core.embed(&texts, false) {
-            Ok(vecs) => {
-                let ix = core.index.lock();
-                for ((id, _), v) in batch.iter().zip(vecs) {
-                    if let Err(e) = ix.set_embedding(*id, &model, &v) {
-                        tracing::warn!("embedding {id}: {e}");
-                    }
+        let vecs = match core.embed(&texts, false) {
+            Ok(v) => v,
+            Err(crate::ai::Unavailable::Server(e)) if is_too_large(&e) => {
+                // One chunk is longer than the model's context (code, JSON, hashes have far more
+                // tokens than the chunker estimates). Without this the same batch failed forever,
+                // every few seconds, and nothing else got embedded.
+                match embed_one_by_one(core, &texts) {
+                    Some(v) => v,
+                    None => return,
                 }
-                let st = ix.stats().unwrap_or_default();
-                drop(ix);
-                core.emit(CoreEvent::IndexProgress { files: st.files, chunks: st.chunks, embedded: st.embedded });
             }
             Err(e) => {
                 tracing::warn!("embedding unavailable: {e:?}");
                 return;
             }
+        };
+        let ix = core.index.lock();
+        for ((id, _), v) in batch.iter().zip(vecs) {
+            if let Err(e) = ix.set_embedding(*id, &model, &v) {
+                tracing::warn!("embedding {id}: {e}");
+            }
+        }
+        let st = ix.stats().unwrap_or_default();
+        drop(ix);
+        core.emit(CoreEvent::IndexProgress { files: st.files, chunks: st.chunks, embedded: st.embedded });
+    }
+}
+
+fn is_too_large(e: &str) -> bool {
+    e.contains("too large") || e.contains("exceeds the available context") || e.contains("context size")
+}
+
+/// Embeds each text alone, cutting one that is too long in half until it fits (the start of a
+/// chunk is what matters for finding it). `None` if the server is unavailable.
+fn embed_one_by_one(core: &Arc<Core>, texts: &[String]) -> Option<Vec<Vec<f32>>> {
+    let mut out = Vec::with_capacity(texts.len());
+    for t in texts {
+        let mut t = t.clone();
+        loop {
+            match core.embed(std::slice::from_ref(&t), false) {
+                Ok(mut v) if v.len() == 1 => {
+                    out.push(v.pop().unwrap());
+                    break;
+                }
+                Err(crate::ai::Unavailable::Server(e)) if is_too_large(&e) && t.chars().count() > 64 => {
+                    let half = t.chars().count() / 2;
+                    t = t.chars().take(half).collect();
+                }
+                Ok(_) | Err(_) => {
+                    tracing::warn!("embedding unavailable for a chunk of {} characters", t.chars().count());
+                    return None;
+                }
+            }
         }
     }
+    Some(out)
 }

@@ -14,6 +14,8 @@ pub trait Transcriber: Send {
     /// Transcribes in `lang` (never translates). `hints` are the user's languages, `prompt`
     /// recent text in the same language. Returns the text and the language the backend reports.
     fn transcribe(&mut self, pcm: &[f32], lang: Option<&Lang>, hints: &[Lang], prompt: &str) -> Result<(String, Option<Lang>)>;
+    /// Background mode (no recording running): use as few resources as possible.
+    fn set_background(&mut self, _on: bool) {}
 }
 
 #[cfg(feature = "whisper")]
@@ -31,7 +33,13 @@ mod whisper {
         lid: Option<(WhisperContext, WhisperState)>,
         model_name: String,
         threads: usize,
+        /// Threads while a recording runs; in background mode only `BACKGROUND_THREADS`.
+        live_threads: usize,
     }
+
+    /// Whisper's CPU threads spin while they wait for the GPU; two are enough when nobody waits
+    /// for the result.
+    const BACKGROUND_THREADS: usize = 2;
 
     fn load_ctx(path: &std::path::Path) -> Result<(WhisperContext, WhisperState)> {
         let mut p = WhisperContextParameters::default();
@@ -55,7 +63,7 @@ mod whisper {
                 None => None,
             };
             let threads = perf_threads();
-            Ok(WhisperTranscriber { _ctx: ctx, state, lid, model_name: model_name.into(), threads })
+            Ok(WhisperTranscriber { _ctx: ctx, state, lid, model_name: model_name.into(), threads, live_threads: threads })
         }
     }
 
@@ -87,6 +95,10 @@ mod whisper {
     impl Transcriber for WhisperTranscriber {
         fn name(&self) -> String {
             format!("local/{}", self.model_name)
+        }
+
+        fn set_background(&mut self, on: bool) {
+            self.threads = if on { BACKGROUND_THREADS.min(self.live_threads) } else { self.live_threads };
         }
 
         fn detect(&mut self, pcm: &[f32]) -> Result<Vec<(Lang, f32)>> {

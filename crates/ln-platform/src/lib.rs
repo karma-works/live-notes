@@ -40,6 +40,28 @@ pub enum Permission {
     NotDetermined,
 }
 
+/// Lowers (or restores) the calling thread's priority. In background mode macOS runs it on the
+/// efficiency cores and throttles its disk access; threads it starts afterwards inherit this.
+pub fn set_current_thread_background(on: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        // <sys/qos.h>
+        const QOS_CLASS_USER_INITIATED: u32 = 0x19;
+        const QOS_CLASS_BACKGROUND: u32 = 0x09;
+        unsafe extern "C" {
+            fn pthread_set_qos_class_self_np(qos: u32, relative_priority: i32) -> i32;
+        }
+        let qos = if on { QOS_CLASS_BACKGROUND } else { QOS_CLASS_USER_INITIATED };
+        // SAFETY: only changes the scheduling class of the calling thread.
+        let rc = unsafe { pthread_set_qos_class_self_np(qos, 0) };
+        if rc != 0 {
+            tracing::warn!("setting the thread priority failed: {rc}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = on;
+}
+
 /// Starts the microphone with voice processing (echo cancellation) and sends mono chunks.
 pub fn start_microphone(tx: crossbeam_channel::Sender<AudioChunk>) -> Result<Box<dyn CaptureStream>> {
     #[cfg(target_os = "macos")]

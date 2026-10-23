@@ -109,9 +109,76 @@ impl AsrEngine {
 
     /// Transcribes one section. `override_lang` is set when the user corrected the language.
     pub fn process(&mut self, seg: &PendingSegment, override_lang: Option<&Lang>) -> Result<Option<Segment>> {
+        let (lang, conf) = self.language(seg, override_lang)?;
+        self.transcribe_as(seg, lang, conf)
+    }
+
+    /// Transcribes sections that were waiting in a queue. Consecutive sections of the same channel
+    /// and language share one Whisper run: the encoder always processes a 30 s window, so a
+    /// 2 s section costs as much as a 28 s one. Packing cuts the runs of a typical conversation
+    /// by about a quarter (more for monologues). Each result belongs to the returned section;
+    /// a packed section spans its parts.
+    pub fn process_packed(&mut self, segs: Vec<PendingSegment>) -> Vec<(PendingSegment, Result<Option<Segment>>)> {
+        if segs.len() < 2 || self.transcriber.detects_language() {
+            return segs
+                .into_iter()
+                .map(|s| {
+                    let r = self.process(&s, None);
+                    (s, r)
+                })
+                .collect();
+        }
+        let mut out = Vec::new();
+        let mut group: Vec<PendingSegment> = Vec::new();
+        let mut group_lang: Option<(Lang, f32)> = None;
+        for s in segs {
+            let (lang, conf) = match self.language(&s, None) {
+                Ok((Some(l), c)) => (l, c),
+                Ok((None, _)) => unreachable!("only backends that detect the language return none"),
+                Err(e) => {
+                    self.flush_group(&mut group, group_lang.take(), &mut out);
+                    out.push((s, Err(e)));
+                    continue;
+                }
+            };
+            // The next section's language choice leans on this one, as it would one by one.
+            self.previous.insert(s.channel, lang.clone());
+            let fits = group.first().is_some_and(|g| g.channel == s.channel)
+                && group_lang.as_ref().is_some_and(|(l, _)| *l == lang)
+                && packed_len(&group) + PACK_GAP + s.pcm.len() <= PACK_SAMPLES;
+            if !fits {
+                self.flush_group(&mut group, group_lang.take(), &mut out);
+            }
+            group_lang = Some(match group_lang {
+                Some((l, c)) => (l, c.min(conf)),
+                None => (lang, conf),
+            });
+            group.push(s);
+        }
+        self.flush_group(&mut group, group_lang, &mut out);
+        out
+    }
+
+    fn flush_group(
+        &mut self,
+        group: &mut Vec<PendingSegment>,
+        lang: Option<(Lang, f32)>,
+        out: &mut Vec<(PendingSegment, Result<Option<Segment>>)>,
+    ) {
+        if group.is_empty() {
+            return;
+        }
+        let seg = pack(std::mem::take(group));
+        let (lang, conf) = lang.map(|(l, c)| (Some(l), c)).unwrap_or((None, 0.0));
+        let r = self.transcribe_as(&seg, lang, conf);
+        out.push((seg, r));
+    }
+
+    /// The language to transcribe a section in, with its confidence.
+    fn language(&mut self, seg: &PendingSegment, override_lang: Option<&Lang>) -> Result<(Option<Lang>, f32)> {
         let duration = seg.end_ms.saturating_sub(seg.start_ms);
         let fixed = override_lang.cloned().or_else(|| self.forced_language.clone());
-        let (lang, conf) = match fixed {
+        Ok(match fixed {
             Some(l) => (Some(l), 1.0),
             None if self.transcriber.detects_language() => (None, 0.0),
             None => {
@@ -119,7 +186,11 @@ impl AsrEngine {
                 let (l, c) = choose_language(&probs, &self.allowed, self.previous.get(&seg.channel), duration);
                 (Some(l), c)
             }
-        };
+        })
+    }
+
+    fn transcribe_as(&mut self, seg: &PendingSegment, lang: Option<Lang>, conf: f32) -> Result<Option<Segment>> {
+        let duration = seg.end_ms.saturating_sub(seg.start_ms);
         let prompt = lang.as_ref().and_then(|l| self.context.get(&(seg.channel, l.clone()))).cloned().unwrap_or_default();
         let (text, reported) = self.transcriber.transcribe(&seg.pcm, lang.as_ref(), &self.allowed, &prompt)?;
         let lang = reported
@@ -143,6 +214,30 @@ impl AsrEngine {
         }
         Ok(Some(Segment { channel: seg.channel, start_ms: seg.start_ms, end_ms: seg.end_ms, lang, text, lang_confidence: conf }))
     }
+}
+
+/// Most audio one packed Whisper run holds (its window is 30 s).
+const PACK_SAMPLES: usize = 28 * crate::RATE as usize;
+/// Silence between packed sections, so words do not run together.
+const PACK_GAP: usize = crate::RATE as usize * 3 / 10;
+
+fn packed_len(group: &[PendingSegment]) -> usize {
+    group.iter().map(|s| s.pcm.len()).sum::<usize>() + PACK_GAP * group.len().saturating_sub(1)
+}
+
+/// Joins sections of one channel into one, with a short silence between them.
+fn pack(mut group: Vec<PendingSegment>) -> PendingSegment {
+    if group.len() == 1 {
+        return group.pop().unwrap();
+    }
+    let mut pcm = Vec::with_capacity(packed_len(&group));
+    for (i, s) in group.iter().enumerate() {
+        if i > 0 {
+            pcm.resize(pcm.len() + PACK_GAP, 0.0);
+        }
+        pcm.extend_from_slice(&s.pcm);
+    }
+    PendingSegment { channel: group[0].channel, start_ms: group[0].start_ms, end_ms: group.last().unwrap().end_ms, pcm: Arc::new(pcm) }
 }
 
 #[cfg(test)]
@@ -171,6 +266,50 @@ mod tests {
             assert!(prompt.is_empty() || !prompt.contains(if l.as_str() == "zh" { "Hallo" } else { "开会" }), "prompt mixes languages");
             Ok((t.to_string(), Some(l)))
         }
+    }
+
+    /// Counts Whisper runs; loud sections are Chinese, quiet ones German.
+    struct CountingAsr(Arc<std::sync::atomic::AtomicUsize>);
+    impl Transcriber for CountingAsr {
+        fn name(&self) -> String {
+            "count".into()
+        }
+        fn detect(&mut self, pcm: &[f32]) -> Result<Vec<(Lang, f32)>> {
+            FakeAsr.detect(pcm)
+        }
+        fn transcribe(&mut self, pcm: &[f32], lang: Option<&Lang>, _h: &[Lang], _p: &str) -> Result<(String, Option<Lang>)> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let words = if lang.unwrap().as_str() == "zh" { "好" } else { "ja" };
+            Ok((format!("{words} {}", pcm.len() / 16_000), lang.cloned()))
+        }
+    }
+
+    fn section(channel: Channel, start_ms: u64, ms: u64, amp: f32) -> PendingSegment {
+        let pcm = (0..(ms as usize * 16)).map(|i| amp * (i as f32 * 0.07).sin()).collect();
+        PendingSegment { channel, start_ms, end_ms: start_ms + ms, pcm: Arc::new(pcm) }
+    }
+
+    #[test]
+    fn packs_consecutive_sections_of_one_channel_and_language() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut engine =
+            AsrEngine::new(Box::new(CountingAsr(runs.clone())), PostProcessor::new(ChineseScript::Simplified), Lang::main_languages());
+        let segs = vec![
+            section(Channel::Me, 0, 3000, 0.2),        // German
+            section(Channel::Me, 4000, 2000, 0.2),     // German: packed with the first
+            section(Channel::Me, 7000, 2000, 0.6),     // Chinese: new run
+            section(Channel::Others, 9500, 2000, 0.6), // other channel: new run
+            section(Channel::Others, 12000, 20000, 0.6),
+            section(Channel::Others, 33000, 10000, 0.6), // would exceed 28 s: new run
+        ];
+        let out = engine.process_packed(segs);
+        assert_eq!(runs.load(std::sync::atomic::Ordering::Relaxed), 4);
+        let spans: Vec<(u64, u64)> = out.iter().map(|(p, _)| (p.start_ms, p.end_ms)).collect();
+        assert_eq!(spans, vec![(0, 6000), (7000, 9000), (9500, 32000), (33000, 43000)]);
+        let first = out[0].1.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(first.lang.as_str(), "de");
+        assert_eq!(first.text, "ja 5", "3 s + 0.3 s gap + 2 s of audio in one run");
+        assert_eq!(out[0].0.pcm.len(), (3000 + 300 + 2000) * 16);
     }
 
     fn tone(ms: u32, amp: f32) -> Vec<f32> {
