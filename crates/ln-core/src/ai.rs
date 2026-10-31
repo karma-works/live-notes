@@ -23,6 +23,7 @@ pub struct RoleClient {
     pub client: Client,
     pub model: String,
     pub cloud: bool,
+    _lease: Option<crate::models::ModelLease>,
 }
 
 impl Core {
@@ -53,7 +54,7 @@ impl Core {
         if p.kind == ProviderKind::ChatGpt {
             // Billed to the plan, so the monthly cost limit does not apply.
             let token = self.chatgpt_token()?;
-            return Ok(RoleClient { client: Client::new(p, Some(token)), model: model.to_string(), cloud: true });
+            return Ok(RoleClient { client: Client::new(p, Some(token)), model: model.to_string(), cloud: true, _lease: None });
         }
         if p.is_cloud && self.cost_limit_reached() {
             return Err(Unavailable::CostLimit);
@@ -65,17 +66,17 @@ impl Core {
             if !self.model_installed(model) {
                 return Err(Unavailable::ModelMissing);
             }
-            let base = if chat { self.models().ensure_chat_server(model) } else { self.models().ensure_embed_server() }
+            let (base, lease) = if chat { self.models().ensure_chat_server(model) } else { self.models().ensure_embed_server() }
                 .map_err(Unavailable::Server)?;
             let provider = Provider { base_url: base, ..p };
-            return Ok(RoleClient { client: Client::new(provider, None), model: model.to_string(), cloud: false });
+            return Ok(RoleClient { client: Client::new(provider, None), model: model.to_string(), cloud: false, _lease: Some(lease) });
         }
         if matches!(p.kind, ProviderKind::OpenRouter | ProviderKind::OpenAi) && !self.has_api_key(provider) {
             return Err(Unavailable::NoKey(p.name.clone()));
         }
         let mut c = Client::new(p.clone(), self.api_key(provider));
         c.deny_data_collection = s.privacy.openrouter_deny_data_collection;
-        Ok(RoleClient { client: c, model: model.to_string(), cloud: p.is_cloud })
+        Ok(RoleClient { client: c, model: model.to_string(), cloud: p.is_cloud, _lease: None })
     }
 
     /// True if the assistant could answer now (for UI hints).

@@ -477,3 +477,92 @@ fn notes_are_sorted_into_categories_with_one_request() {
     assert_eq!(core.settings().categories.color_of("Kunden"), None);
     core.shutdown();
 }
+
+#[test]
+fn thoughts_recording_consolidates_without_transcript_even_when_auto_summary_is_off() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(async {
+        let s = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"text": "Die Suche muss offline funktionieren. Offline ist wichtig. Export bleibt offen.", "languages": ["de"]})))
+            .mount(&s).await;
+        let doc = json!({"title": "Lokale Suche", "document": "## Anforderungen\n\n- Die Suche muss offline funktionieren.\n\n## Offene Fragen\n\n- Export klären."});
+        Mock::given(method("POST")).and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"choices": [{"message": {"content": doc.to_string()}}]})))
+            .mount(&s).await;
+        s
+    });
+    let (dir, core, mut events) = core_with(&server.uri());
+    core.update_settings(|s| s.notes.auto_summary = false);
+    let wav = dir.path().join("thoughts.wav");
+    tone_wav(&wav, &[(500, 0.0), (1500, 0.3), (800, 0.0)]);
+    let p = core
+        .start_recording_mode(
+            RecordingMode::Thoughts,
+            Some(CaptureConfig { me: Source::File { path: wav, realtime: false }, others: Source::Off }),
+        )
+        .unwrap();
+    assert_eq!(core.recording_info().unwrap().mode, RecordingMode::Thoughts);
+    assert!(core.wait_recording_files_done(Duration::from_secs(10)));
+    core.stop_recording();
+    let final_path = rt.block_on(async {
+        use futures::StreamExt;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            if let CoreEvent::SummaryReady { path } = tokio::time::timeout_at(deadline, events.next()).await.unwrap().unwrap() {
+                break path;
+            }
+        }
+    });
+    let saved = std::fs::read_to_string(&final_path).unwrap();
+    assert!(saved.contains("## Anforderungen"), "{saved}");
+    assert!(saved.contains("Export klären"));
+    assert!(!saved.contains("ln:transcript"));
+    assert!(!saved.contains("Offline ist wichtig"));
+    assert!(saved.contains("consolidated: true"));
+    assert!(!p.exists(), "renamed after the document title");
+    assert!(ln_notes::recover_sessions(&core.paths.journal_dir()).unwrap().is_empty());
+    let requests = rt.block_on(server.received_requests()).unwrap();
+    let request = requests.iter().find(|r| r.url.path() == "/chat/completions").unwrap();
+    let body: serde_json::Value = request.body_json().unwrap();
+    assert!(body["messages"][0]["content"].as_str().unwrap().contains("Preserve all substantive details"));
+    assert!(!body["messages"][1]["content"].as_str().unwrap().contains("[00:"));
+    core.shutdown();
+}
+
+#[test]
+fn failed_consolidation_keeps_source_and_can_be_retried() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let server = rt.block_on(mock_server()); // Meeting JSON is invalid for a thought document.
+    let (_dir, core, _events) = core_with(&server.uri());
+    let p = core.create_note(None).unwrap();
+    let mut note = ln_notes::Note::new_recording("thoughts".into(), chrono::Local::now().fixed_offset(), "test", core.ui_language());
+    note.front.as_mut().unwrap().extra.insert("recording_mode".into(), "thoughts".into());
+    note.set_transcript(
+        &[ln_types::Segment {
+            channel: ln_types::Channel::Me,
+            start_ms: 1000,
+            end_ms: 2000,
+            lang: "de".into(),
+            text: "Suche offline. Export noch unklar.".into(),
+            lang_confidence: 1.0,
+        }],
+        core.ui_language(),
+    );
+    std::fs::write(&p, note.render()).unwrap();
+    let original = std::fs::read_to_string(&p).unwrap();
+    assert!(crate::summary::summarize(&core, &p).is_none());
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
+    rt.block_on(async {
+        server.reset().await;
+        let doc = json!({"title": "Suchanforderungen", "document": "## Anforderungen\n- Suche offline.\n## Offen\n- Export."});
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"choices": [{"message": {"content": doc.to_string()}}]})))
+            .mount(&server)
+            .await;
+    });
+    let result = crate::summary::summarize(&core, &p).unwrap();
+    assert!(!std::fs::read_to_string(result).unwrap().contains("ln:transcript"));
+    core.shutdown();
+}

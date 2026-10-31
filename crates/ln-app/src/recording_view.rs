@@ -219,7 +219,8 @@ impl Render for RecordingView {
             .map(|i| (i.elapsed.as_secs(), i.paused, i.level_me, i.level_others, i.cloud))
             .unwrap_or((0, false, 0.0, 0.0, false));
         let connecting = info.as_ref().is_some_and(|i| i.connecting);
-        let suggestions = self.core.settings().live_suggestions.enabled;
+        let thoughts = info.as_ref().is_some_and(|i| i.mode == ln_core::RecordingMode::Thoughts);
+        let suggestions = !thoughts && self.core.settings().live_suggestions.enabled;
         h_flex()
             .size_full()
             .child(
@@ -235,7 +236,7 @@ impl Render for RecordingView {
                             .border_b_1()
                             .border_color(theme.border)
                             .child(div().text_color(theme.danger).child("●"))
-                            .child(div().font_semibold().child(t("recording")))
+                            .child(div().font_semibold().child(t(if thoughts { "organize-thoughts" } else { "recording" })))
                             .when(connecting, |el| {
                                 el.child(
                                     h_flex()
@@ -263,7 +264,18 @@ impl Render for RecordingView {
                             }),
                     )
                     .child(div().px_8().pt_3().h(px(140.)).child(Textarea::new(&self.notes).h(px(120.))))
-                    .child(self.render_transcript(cx))
+                    .when(!thoughts, |el| el.child(self.render_transcript(cx)))
+                    .when(thoughts, |el| {
+                        el.child(
+                            div()
+                                .flex_1()
+                                .px_8()
+                                .py_4()
+                                .text_sm()
+                                .text_color(theme.muted_foreground)
+                                .child(t("organize-thoughts-recording")),
+                        )
+                    })
                     .child(
                         h_flex()
                             .px_8()

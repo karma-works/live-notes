@@ -9,6 +9,18 @@ Transkription und Suche laufen lokal (Whisper, EmbeddingGemma, SQLite). Der Assi
 günstiges, multimodales Modell (Standard: Gemma 4 über OpenRouter), austauschbar über jede
 OpenAI-kompatible API (OpenRouter, LiteLLM-Proxy, Ollama, lokales Gemma). Audio wird nie gespeichert.
 
+Mit **Gedanken ordnen** lassen sich frei gesprochene Ideen über das Mikrofon in ein zusammenhängendes
+Dokument überführen, etwa eine Anforderungsspezifikation. Verwandte Aussagen werden gruppiert,
+Wiederholungen entfernt und Details sowie offene Widersprüche erhalten. Das Ergebnis enthält keine
+Zeitstempel und kein Transkript. Bis zur erfolgreichen Konsolidierung bleibt der Ausgangstext zur
+Wiederherstellung gespeichert; bei Fehlern gibt es in der Notiz „Gedanken erneut ordnen“.
+Der Modus verwendet das konfigurierte Zusammenfassungsmodell, auch bei deaktivierter automatischer
+Meeting-Zusammenfassung.
+
+Whisper wird erst für die Transkription geladen und nach deren Abschluss wieder freigegeben.
+Lokale Chat- und Suchmodelle werden nach der eingestellten Leerlaufzeit entladen; laufende
+Anfragen sind davon ausgenommen.
+
 ![Aufnahme mit Live-Transkript in fünf Sprachen](docs/screenshots/08-recording.png)
 
 Status: v1.0 umgesetzt, Abnahme mit echten Geräten offen – siehe [STATUS](docs/STATUS.md).

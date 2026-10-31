@@ -230,3 +230,8 @@ copied-markdown = Markdown in die Zwischenablage kopiert
 copy-path = Pfad kopieren
 copied-path = Pfad in die Zwischenablage kopiert
 open-file-failed = Die Datei konnte nicht geöffnet werden.
+
+organize-thoughts = Gedanken ordnen
+organize-thoughts-help = Gedanken per Mikrofon aufnehmen und zu einem strukturierten Dokument zusammenführen.
+organize-thoughts-recording = Sprich deine Gedanken frei aus. Nach dem Stoppen entsteht daraus ein strukturiertes Dokument ohne Wiederholungen und Zeitstempel. Ausgangsaussagen werden bis zur erfolgreichen Konsolidierung zur Wiederherstellung aufbewahrt.
+retry-consolidation = Gedanken erneut ordnen

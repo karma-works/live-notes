@@ -81,6 +81,7 @@ pub struct AppView {
     forward: Vec<Selected>,
     download: Option<f32>,
     starting: bool,
+    recording_mode: ln_core::RecordingMode,
     sidebar_open: bool,
     focus: FocusHandle,
     /// Where the settings gear was drawn last, so the tour can click it like a user.
@@ -146,6 +147,7 @@ impl AppView {
             forward: vec![],
             download: None,
             starting: false,
+            recording_mode: ln_core::RecordingMode::Meeting,
             sidebar_open: true,
             focus: cx.focus_handle(),
             gear_bounds: Default::default(),
@@ -154,8 +156,6 @@ impl AppView {
         };
         v.reload_notes(cx);
         window.focus(&v.focus, cx);
-        // Load Whisper now, so that "Start recording" is instant later.
-        v.core.warm_up();
         v
     }
 
@@ -227,9 +227,6 @@ impl AppView {
             }
             CoreEvent::ModelsChanged => {
                 self.download = self.core.model_status().iter().find_map(|m| m.progress);
-                if self.download.is_none() {
-                    self.core.warm_up();
-                }
                 if let Some(s) = &self.settings {
                     s.update(cx, |_, cx| cx.notify());
                 }
@@ -246,8 +243,6 @@ impl AppView {
             }
             CoreEvent::SettingsChanged => {
                 crate::i18n::set_language(self.core.ui_language());
-                // Load the transcriber for changed transcription settings before the next recording.
-                self.core.warm_up();
                 cx.notify();
             }
             CoreEvent::ChatGptChanged { first_sign_in } => {
@@ -395,6 +390,10 @@ impl AppView {
     }
 
     pub fn toggle_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_recording_mode(ln_core::RecordingMode::Meeting, window, cx);
+    }
+
+    fn toggle_recording_mode(&mut self, mode: ln_core::RecordingMode, window: &mut Window, cx: &mut Context<Self>) {
         let _slow = SlowGuard(std::time::Instant::now(), "toggle_recording");
         tracing::info!("toggle_recording: enter");
         let active = self.core.recording_active();
@@ -405,6 +404,10 @@ impl AppView {
             cx.notify();
             return;
         }
+        if self.starting {
+            return;
+        }
+        self.recording_mode = mode;
         if !self.core.settings().recording_consent_accepted {
             let me = cx.entity().downgrade();
             let core = self.core.clone();
@@ -496,8 +499,9 @@ impl AppView {
         self.starting = true;
         cx.notify();
         let core = self.core.clone();
+        let mode = self.recording_mode;
         cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_spawn(async move { core.start_recording(capture) }).await;
+            let result = cx.background_spawn(async move { core.start_recording_mode(mode, capture) }).await;
             let _ = this.update_in(cx, |v, window, cx| {
                 v.starting = false;
                 match result {
@@ -649,7 +653,20 @@ impl AppView {
                                     this.toggle_recording(window, cx);
                                 }
                             })),
-                    ),
+                    )
+                    .when(recording.is_none(), |el| {
+                        el.child(
+                            Button::new("organize-thoughts")
+                                .w_full()
+                                .ghost()
+                                .icon(IconName::Mic)
+                                .label(t("organize-thoughts"))
+                                .tooltip(t("organize-thoughts-help"))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_recording_mode(ln_core::RecordingMode::Thoughts, window, cx);
+                                })),
+                        )
+                    }),
             )
             .child(
                 h_flex()

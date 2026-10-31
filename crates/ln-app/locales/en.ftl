@@ -230,3 +230,8 @@ copied-markdown = Markdown copied to clipboard
 copy-path = Copy path
 copied-path = Path copied to clipboard
 open-file-failed = The file could not be opened.
+
+organize-thoughts = Organize thoughts
+organize-thoughts-help = Record thoughts through your microphone and turn them into a structured document.
+organize-thoughts-recording = Speak your thoughts freely. After stopping, they become a structured document without repetition or timestamps. Source text is kept for recovery until consolidation succeeds.
+retry-consolidation = Retry organizing thoughts

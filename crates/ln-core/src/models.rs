@@ -40,8 +40,18 @@ pub struct ModelManager {
     dir: PathBuf,
     state: Mutex<HashMap<&'static str, DlState>>,
     embed: Arc<Mutex<Option<LlamaServer>>>,
-    chat: Mutex<Option<LlamaServer>>,
+    chat: Arc<Mutex<Option<LlamaServer>>>,
     downloading: Mutex<bool>,
+}
+
+pub(crate) struct ModelLease(Arc<Mutex<Option<LlamaServer>>>);
+
+impl Drop for ModelLease {
+    fn drop(&mut self) {
+        if let Some(s) = self.0.lock().as_mut() {
+            s.touch();
+        }
+    }
 }
 
 impl ModelManager {
@@ -50,7 +60,7 @@ impl ModelManager {
             dir,
             state: Mutex::new(HashMap::new()),
             embed: Arc::new(Mutex::new(None)),
-            chat: Mutex::new(None),
+            chat: Arc::new(Mutex::new(None)),
             downloading: Mutex::new(false),
         }
     }
@@ -93,21 +103,21 @@ impl ModelManager {
     }
 
     /// Base URL of a running embeddings server, starting it if needed.
-    pub fn ensure_embed_server(&self) -> Result<String, String> {
+    pub fn ensure_embed_server(&self) -> Result<(String, ModelLease), String> {
         let mut g = self.embed.lock();
         if let Some(s) = g.as_mut()
             && s.is_running()
         {
             s.touch();
-            return Ok(ServerRole::Embeddings.base_url());
+            return Ok((ServerRole::Embeddings.base_url(), ModelLease(self.embed.clone())));
         }
         let path = self.file("embeddinggemma-300m", 0).filter(|p| p.exists()).ok_or("embedding model not installed")?;
         let s = LlamaServer::start(ServerRole::Embeddings, &path, None, 2048).map_err(|e| e.to_string())?;
         *g = Some(s);
-        Ok(ServerRole::Embeddings.base_url())
+        Ok((ServerRole::Embeddings.base_url(), ModelLease(self.embed.clone())))
     }
 
-    pub fn ensure_chat_server(&self, model_id: &str) -> Result<String, String> {
+    pub fn ensure_chat_server(&self, model_id: &str) -> Result<(String, ModelLease), String> {
         let spec = by_id(model_id).ok_or("unknown local model")?;
         let main = self.file(model_id, 0).filter(|p| p.exists()).ok_or("local model not installed")?;
         let mmproj = self.file(model_id, 1).filter(|p| p.exists());
@@ -115,19 +125,25 @@ impl ModelManager {
         if let Some(s) = g.as_mut() {
             if s.is_running() && s.model == main {
                 s.touch();
-                return Ok(ServerRole::Chat.base_url());
+                return Ok((ServerRole::Chat.base_url(), ModelLease(self.chat.clone())));
+            }
+            if Arc::strong_count(&self.chat) > 1 {
+                return Err("Local model is busy; retry when the current request finishes".into());
             }
             s.stop();
         }
         let ctx = if spec.id == "gemma-4-e4b-it" && ram_gb() >= 16 { 8192 } else { 4096 };
         let s = LlamaServer::start(ServerRole::Chat, &main, mmproj.as_deref(), ctx).map_err(|e| e.to_string())?;
         *g = Some(s);
-        Ok(ServerRole::Chat.base_url())
+        Ok((ServerRole::Chat.base_url(), ModelLease(self.chat.clone())))
     }
 
     fn unload_idle(&self, after: Duration) {
-        for slot in [&*self.embed, &self.chat] {
+        for slot in [&self.embed, &self.chat] {
             let mut g = slot.lock();
+            if Arc::strong_count(slot) > 1 {
+                continue;
+            }
             if g.as_ref().is_some_and(|s| s.idle_for() > after)
                 && let Some(mut s) = g.take()
             {

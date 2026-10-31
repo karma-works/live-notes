@@ -622,6 +622,21 @@ impl Render for NoteView {
                         .child(text),
                 )
             })
+            .when(
+                self.core.activity(self.path()).is_none()
+                    && ln_notes::Note::parse(&self.text).ok().is_some_and(|n| {
+                        n.front.is_some_and(|f| {
+                            f.extra.get("recording_mode").and_then(|v| v.as_str()) == Some("thoughts")
+                                && f.extra.get("consolidated").and_then(|v| v.as_bool()) != Some(true)
+                        })
+                    }),
+                |el| {
+                    el.child(Button::new("retry-consolidation").label(t("retry-consolidation")).on_click(cx.listener(|this, _, _, cx| {
+                        this.save_now(cx);
+                        this.core.retry_consolidation(this.path());
+                    })))
+                },
+            )
             .when(self.conflict, |el| el.child(self.render_conflict(cx)))
             .child(match self.mode {
                 Mode::Read => self.render_reading(cx).into_any_element(),

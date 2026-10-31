@@ -43,7 +43,7 @@ pub enum SetupStep {
     LlamaServerMissing,
 }
 pub use probe::{ChannelProbe, ProbeReport};
-pub use recording::{Activity, RecordingInfo};
+pub use recording::{Activity, RecordingInfo, RecordingMode};
 pub use suggest::SuggestionCard;
 
 use events::EventSender;
@@ -85,7 +85,7 @@ pub struct Core {
     /// sorted again.
     classified: Mutex<std::collections::HashMap<PathBuf, u64>>,
     chatgpt: chatgpt::State,
-    /// The shared transcription worker (loaded ahead of time).
+    /// The shared transcription worker; its model is loaded only while processing audio.
     asr: Mutex<Option<Arc<recording::AsrWorker>>>,
     /// Background work per note (connecting, finishing the transcript, summarizing).
     activities: Mutex<Vec<(PathBuf, recording::Activity)>>,

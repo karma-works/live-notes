@@ -1,7 +1,7 @@
 //! A recording session (SPEC §5 F1–F3): capture → VAD → ASR → journal + Markdown note.
 //! Audio lives only in memory; the journal holds text only.
 //!
-//! Responsiveness: Whisper is loaded once, ahead of time (`warm_up`), in one shared ASR worker.
+//! Whisper is loaded on demand by a shared worker and released after finishing each recording.
 //! Starting shows the recording at once and connects the devices in the background ("connecting");
 //! stopping returns at once, the rest of the transcript and the summary follow in the background
 //! (`Activity`), and a new recording can start meanwhile: its sections queue behind the old ones.
@@ -17,13 +17,21 @@ use ln_notes::{JournalEntry, JournalWriter, Note, SectionKind, atomic_write, rec
 use ln_types::{Channel, Lang, Segment, TranscriptionMode};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecordingMode {
+    #[default]
+    Meeting,
+    Thoughts,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordingInfo {
+    pub mode: RecordingMode,
     pub note_path: PathBuf,
     pub note_id: String,
     pub elapsed: Duration,
@@ -63,6 +71,7 @@ pub(crate) struct State {
 /// What the ASR worker needs to know about the recording a section belongs to.
 pub(crate) struct Ctx {
     id: u64,
+    mode: RecordingMode,
     pub state: Arc<Mutex<State>>,
     note_path: PathBuf,
     note_id: String,
@@ -71,8 +80,6 @@ pub(crate) struct Ctx {
 }
 
 enum AsrJob {
-    /// Load the model and run it once, so the first real section is fast.
-    Warm,
     Section(Arc<Ctx>, PendingSegment),
     Redo(Arc<Ctx>, usize, Lang),
     /// All sections of this recording are queued: write the note, then summarize.
@@ -119,6 +126,7 @@ impl Core {
         let st = s.ctx.state.lock();
         let level = |c| s.capture.as_ref().map(|cap| cap.level(c)).unwrap_or(0.0);
         Some(RecordingInfo {
+            mode: s.ctx.mode,
             note_path: s.note_path.clone(),
             note_id: s.note_id.clone(),
             elapsed: s.started.map(|t| t.elapsed()).unwrap_or_default(),
@@ -162,7 +170,7 @@ impl Core {
         self.activities.lock().clone()
     }
 
-    fn set_activity(&self, note: &Path, a: Option<Activity>) {
+    pub(crate) fn set_activity(&self, note: &Path, a: Option<Activity>) {
         {
             let mut v = self.activities.lock();
             v.retain(|(p, _)| p != note);
@@ -174,18 +182,6 @@ impl Core {
     }
 
     // ---- ASR worker ----------------------------------------------------------------------
-
-    /// Loads the transcription model in the background, so that starting a recording is instant.
-    /// Called at startup, after downloads and when transcription settings change.
-    pub fn warm_up(self: &Arc<Self>) {
-        let s = self.settings();
-        if !s.first_run_done || s.transcription.mode != TranscriptionMode::Local {
-            return;
-        }
-        if let Ok(w) = self.asr_worker() {
-            let _ = w.tx.send(AsrJob::Warm);
-        }
-    }
 
     fn worker_key(&self) -> String {
         let s = self.settings();
@@ -210,7 +206,7 @@ impl Core {
         let cloud = mode != TranscriptionMode::Local;
         let (tx, rx) = unbounded::<AsrJob>();
         let name = Arc::new(Mutex::new(String::new()));
-        let me = self.clone();
+        let me = Arc::downgrade(self);
         let n2 = name.clone();
         let (done_tx, done) = crossbeam_channel::bounded::<()>(0);
         std::thread::Builder::new()
@@ -259,13 +255,14 @@ impl Core {
             }
             let c = self.client_for(&s.transcription.openai_provider).ok_or_else(|| Error::User("provider".into()))?;
             // v1.0: "live" uses the same per-section REST path (Realtime adapter is v1.1, SPEC §16).
-            let t: Box<dyn Transcriber> =
-                Box::new(ln_asr::CloudTranscriber::new(c, s.transcription.openai_model.clone(), self.runtime().clone()));
-            return Ok(Box::new(move || Ok(t)));
+            let handle = self.runtime().clone();
+            return Ok(Box::new(move || {
+                Ok(Box::new(ln_asr::CloudTranscriber::new(c.clone(), s.transcription.openai_model.clone(), handle.clone())))
+            }));
         }
         self.local_model_path()?;
-        let me = self.clone();
-        Ok(Box::new(move || me.local_transcriber()))
+        let me = Arc::downgrade(self);
+        Ok(Box::new(move || me.upgrade().ok_or_else(|| Error::User("App closed".into()))?.local_transcriber()))
     }
 
     fn local_model_path(&self) -> Result<PathBuf> {
@@ -307,8 +304,19 @@ impl Core {
     /// Starts recording into a new note and returns at once; the devices open in the background
     /// (`RecordingInfo::connecting`). `capture` overrides the devices (tests use files).
     pub fn start_recording(self: &Arc<Self>, capture: Option<CaptureConfig>) -> Result<PathBuf> {
+        self.start_recording_mode(RecordingMode::Meeting, capture)
+    }
+
+    pub fn start_recording_mode(self: &Arc<Self>, mode: RecordingMode, capture: Option<CaptureConfig>) -> Result<PathBuf> {
         if self.recording_active() {
             return Err(Error::User(tr(self.ui_language(), "Es läuft bereits eine Aufnahme.", "A recording is already running.")));
+        }
+        if mode == RecordingMode::Thoughts && !self.role_ready(ln_types::ChatRole::Summary) {
+            return Err(Error::User(tr(
+                self.ui_language(),
+                "Für Gedankenordnen bitte zuerst ein Zusammenfassungsmodell in den Einstellungen einrichten.",
+                "Configure a summary model in Settings before organizing thoughts.",
+            )));
         }
         let worker = self.asr_worker()?;
         let ui = self.ui_language();
@@ -320,11 +328,15 @@ impl Core {
             let n = worker.name.lock().clone();
             if n.is_empty() { self.transcriber_label() } else { n }
         };
-        let note = Note::new_recording(note_id.clone(), created, &tname, ui);
+        let mut note = Note::new_recording(note_id.clone(), created, &tname, ui);
+        if mode == RecordingMode::Thoughts {
+            note.front.as_mut().unwrap().extra.insert("recording_mode".into(), "thoughts".into());
+        }
         atomic_write(&note_path, &note.render())?;
         let journal = JournalWriter::create(&self.paths.journal_dir(), &note_id, &note_path, &created.to_rfc3339())?;
         let ctx = Arc::new(Ctx {
             id: SESSION_IDS.fetch_add(1, Ordering::Relaxed),
+            mode,
             state: Arc::new(Mutex::new(State {
                 segments: vec![],
                 my_notes: String::new(),
@@ -356,7 +368,10 @@ impl Core {
         self.emit(CoreEvent::NotesChanged);
         tracing::info!("recording started, connecting devices");
         let me = self.clone();
-        let cfg = capture.unwrap_or_default();
+        let cfg = capture.unwrap_or_else(|| match mode {
+            RecordingMode::Meeting => CaptureConfig::default(),
+            RecordingMode::Thoughts => CaptureConfig { me: ln_audio::Source::Microphone, others: ln_audio::Source::Off },
+        });
         std::thread::Builder::new()
             .name("ln-connect".into())
             .spawn(move || me.connect_devices(id, cfg))
@@ -528,7 +543,7 @@ impl Core {
     }
 }
 
-type Loader = Box<dyn FnOnce() -> Result<Box<dyn Transcriber>> + Send>;
+type Loader = Box<dyn Fn() -> Result<Box<dyn Transcriber>> + Send>;
 
 fn audio_loop(
     rx: Receiver<ln_audio::Tagged>,
@@ -595,7 +610,7 @@ fn audio_loop(
                 "No sound from the microphone. Check the input device and the permission (System Settings → Privacy & Security → Microphone).",
             )));
         }
-        if !warned[1] && started.elapsed() > Duration::from_secs(20) && stats[1].1 == 0 {
+        if ctx.mode == RecordingMode::Meeting && !warned[1] && started.elapsed() > Duration::from_secs(20) && stats[1].1 == 0 {
             warned[1] = true;
             tracing::warn!("system audio: {} samples, all zero", stats[1].0);
             let ui = core.ui_language();
@@ -623,8 +638,7 @@ fn audio_loop(
     }
 }
 
-fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name: &Arc<Mutex<String>>, cloud: bool) {
-    let mut loader = Some(loader);
+fn asr_worker_loop(weak: &Weak<Core>, loader: Loader, rx: Receiver<AsrJob>, name: &Arc<Mutex<String>>, cloud: bool) {
     let mut engine: Option<AsrEngine> = None;
     let mut load_failed = false;
     let mut current_session = 0u64;
@@ -632,10 +646,6 @@ fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name:
     let mut background = false;
     // A job taken from the queue while collecting sections to pack, handled next.
     let mut stash: Option<AsrJob> = None;
-    let new_engine = |t: Box<dyn Transcriber>| {
-        let s = core.settings();
-        AsrEngine::new(t, PostProcessor::new(s.languages.chinese_script), s.languages.mine.clone())
-    };
     loop {
         let job = match stash.take() {
             Some(j) => j,
@@ -644,13 +654,15 @@ fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name:
                 Err(_) => break,
             },
         };
-        // Load lazily: the first job (usually `Warm` at startup) pays for it.
-        if engine.is_none()
-            && !load_failed
-            && let Some(l) = loader.take()
-        {
+        let Some(core) = weak.upgrade() else { break };
+        let new_engine = |t: Box<dyn Transcriber>| {
+            let s = core.settings();
+            AsrEngine::new(t, PostProcessor::new(s.languages.chinese_script), s.languages.mine.clone())
+        };
+        // Load only for audio work; an empty recording must not allocate a model.
+        if engine.is_none() && !load_failed && !matches!(job, AsrJob::Finish { .. }) {
             let t0 = Instant::now();
-            match l() {
+            match loader() {
                 Ok(t) => {
                     *name.lock() = t.name();
                     let mut e = new_engine(t);
@@ -671,7 +683,6 @@ fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name:
             }
         }
         let ctx = match &job {
-            AsrJob::Warm => continue,
             AsrJob::Section(c, _) | AsrJob::Redo(c, _, _) | AsrJob::Finish { ctx: c, .. } => c.clone(),
         };
         if let Some(e) = engine.as_mut()
@@ -681,7 +692,6 @@ fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name:
             current_session = ctx.id;
         }
         match job {
-            AsrJob::Warm => {}
             AsrJob::Section(ctx, p) => {
                 let Some(e) = engine.as_mut() else { continue };
                 // No recording running: the rest of a stopped recording may take its time, but must
@@ -738,7 +748,7 @@ fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name:
                     e.process_packed(batch)
                 };
                 for (p, r) in results {
-                    deliver(core, &ctx, p, r, name);
+                    deliver(&core, &ctx, p, r, name);
                 }
                 if background {
                     // Leave the GPU and CPU idle for a third of the time.
@@ -762,14 +772,22 @@ fn asr_worker_loop(core: &Arc<Core>, loader: Loader, rx: Receiver<AsrJob>, name:
                 }
             }
             AsrJob::Finish { ctx, elapsed, summarize, done } => {
-                finish_note(core, &ctx, elapsed, &name.lock());
+                let transcriber = name.lock().clone();
+                let transcriber = if transcriber.is_empty() { core.transcriber_label() } else { transcriber };
+                finish_note(&core, &ctx, elapsed, &transcriber);
+                // Drop Whisper (including GPU buffers and language detector) before any LLM work.
+                engine = None;
+                load_failed = false;
+                fell_back = false;
+                background = false;
+                ln_platform::set_current_thread_background(false);
                 // A blocking stop (tests, shutdown) waits on `done`; only a user's stop sorts
                 // the note into categories.
                 let sort = done.is_none();
                 if let Some(d) = done {
                     let _ = d.send(());
                 }
-                if summarize {
+                if summarize || (ctx.mode == RecordingMode::Thoughts && sort) {
                     core.set_activity(&ctx.note_path, Some(Activity::Summarizing));
                     let me = core.clone();
                     let path = ctx.note_path.clone();
@@ -808,7 +826,9 @@ fn deliver(core: &Arc<Core>, ctx: &Arc<Ctx>, p: PendingSegment, r: ln_asr::Resul
             if let Some(j) = st.journal.as_mut() {
                 let _ = j.append(&JournalEntry::Segment(seg.clone()));
             }
-            st.ring.push(index, p);
+            if live && ctx.mode == RecordingMode::Meeting {
+                st.ring.push(index, p);
+            }
             // After the stop nobody reads along: rewriting the note (and the UI reloading it)
             // once a minute is enough; the journal keeps every section safe meanwhile.
             let every = if live { Duration::from_secs(10) } else { Duration::from_secs(60) };
@@ -817,7 +837,11 @@ fn deliver(core: &Arc<Core>, ctx: &Arc<Ctx>, p: PendingSegment, r: ln_asr::Resul
                 let _ = write_note(core, &ctx.note_path, &st, ctx.created, None, &name.lock());
             }
             // Live suggestions only while this recording runs.
-            let trigger = if live { st.suggester.observe(&seg, &core.settings().live_suggestions) } else { None };
+            let trigger = if live && ctx.mode == RecordingMode::Meeting {
+                st.suggester.observe(&seg, &core.settings().live_suggestions)
+            } else {
+                None
+            };
             drop(st);
             if live {
                 core.emit(CoreEvent::Segment { index, segment: seg });
@@ -908,5 +932,79 @@ pub fn recover(core: &Arc<Core>) {
                 "An interrupted recording was restored.",
             )));
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    struct TrackedTranscriber(Arc<AtomicUsize>);
+    impl Drop for TrackedTranscriber {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    impl Transcriber for TrackedTranscriber {
+        fn name(&self) -> String {
+            "test".into()
+        }
+        fn detect(&mut self, _: &[f32]) -> ln_asr::Result<Vec<(Lang, f32)>> {
+            Ok(vec![("de".into(), 1.0)])
+        }
+        fn transcribe(&mut self, _: &[f32], _: Option<&Lang>, _: &[Lang], _: &str) -> ln_asr::Result<(String, Option<Lang>)> {
+            Ok(("Gedanke".into(), Some("de".into())))
+        }
+    }
+
+    #[test]
+    fn worker_releases_model_after_finish_and_reloads_for_next_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, _events) = Core::start(ln_types::AppPaths::in_dir(dir.path()), Arc::new(ln_platform::MemoryStore::default())).unwrap();
+        let live = Arc::new(AtomicUsize::new(0));
+        let loads = Arc::new(AtomicUsize::new(0));
+        let l = live.clone();
+        let n = loads.clone();
+        let loader: Loader = Box::new(move || {
+            l.fetch_add(1, Ordering::SeqCst);
+            n.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(TrackedTranscriber(l.clone())))
+        });
+        let (tx, rx) = unbounded();
+        let weak = Arc::downgrade(&core);
+        let worker = std::thread::spawn(move || asr_worker_loop(&weak, loader, rx, &Arc::new(Mutex::new(String::new())), true));
+        for id in 1..=2 {
+            let ctx = Arc::new(Ctx {
+                id,
+                mode: RecordingMode::Meeting,
+                state: Arc::new(Mutex::new(State {
+                    segments: vec![],
+                    my_notes: String::new(),
+                    pinned: vec![],
+                    journal: None,
+                    ring: AudioRing::default(),
+                    last_write: Instant::now(),
+                    suggester: LiveSuggester::default(),
+                })),
+                note_path: core.notes_dir().join(format!("test-{id}.md")),
+                note_id: id.to_string(),
+                created: Local::now().fixed_offset(),
+                cloud_seconds: Mutex::new(0.0),
+            });
+            tx.send(AsrJob::Section(
+                ctx.clone(),
+                PendingSegment { channel: Channel::Me, start_ms: 0, end_ms: 1200, pcm: Arc::new(vec![0.1; 19_200]) },
+            ))
+            .unwrap();
+            let (done, wait) = crossbeam_channel::bounded(1);
+            tx.send(AsrJob::Finish { ctx, elapsed: Duration::from_secs(2), summarize: false, done: Some(done) }).unwrap();
+            wait.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert_eq!(live.load(Ordering::SeqCst), 0, "model must be dropped before completion");
+            assert_eq!(loads.load(Ordering::SeqCst), id as usize, "next recording reloads the model");
+        }
+        drop(tx);
+        worker.join().unwrap();
+        core.shutdown();
     }
 }
