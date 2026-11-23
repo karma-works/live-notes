@@ -43,7 +43,7 @@ mod whisper {
 
     fn load_ctx(path: &std::path::Path) -> Result<(WhisperContext, WhisperState)> {
         let mut p = WhisperContextParameters::default();
-        p.use_gpu(std::env::var("LN_WHISPER_CPU").is_err());
+        p.use_gpu(cfg!(any(target_os = "macos", feature = "vulkan")) && std::env::var("LN_WHISPER_CPU").is_err());
         p.flash_attn(true);
         let ctx = WhisperContext::new_with_params(path, p).map_err(|e| Error::Model(e.to_string()))?;
         let state = ctx.create_state().map_err(|e| Error::Model(e.to_string()))?;

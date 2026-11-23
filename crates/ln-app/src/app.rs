@@ -631,7 +631,7 @@ impl AppView {
                             .cursor_pointer()
                             .child(gpui_kit::component::Icon::new(IconName::Search).small())
                             .child(div().flex_1().child(t("search")))
-                            .child(div().text_xs().child("⌘K"))
+                            .child(div().text_xs().child(if cfg!(target_os = "macos") { "⌘K" } else { "Ctrl+K" }))
                             .tooltip(|window, cx| {
                                 gpui_kit::component::tooltip::Tooltip::new(t("search")).action(&OpenSearch, None).build(window, cx)
                             })

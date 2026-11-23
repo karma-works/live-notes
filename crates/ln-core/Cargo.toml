@@ -6,6 +6,7 @@ license.workspace = true
 description = "Live Notes engine: the facade the UI talks to (recording, notes, search, assistant, models)"
 
 [features]
+vulkan = ["whisper", "ln-asr/vulkan"]
 default = ["whisper"]
 whisper = ["ln-asr/whisper"]
 

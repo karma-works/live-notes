@@ -38,6 +38,8 @@ deny = [{ name = "reqwest", wrappers = ["ln-ai", "ln-models"] }]
 [advisories]
 # Unmaintained crates deep in the GUI stack are reported, not fatal.
 unmaintained = "workspace"
+# Chrono has no patched release. Replacing its date types and serialization needs a separate migration.
+ignore = [{ id = "RUSTSEC-2026-0543", reason = "Maintenance notice only. Migrate persisted dates and timestamps separately." }]
 yanked = "warn"
 
 [sources]

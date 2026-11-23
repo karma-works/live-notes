@@ -175,7 +175,7 @@ impl Render for SearchPanel {
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .child("↩ ".to_string() + t("open"))
-                    .child("⌘↩ ".to_string() + t("ask"))
+                    .child(format!("{} {}", if cfg!(target_os = "macos") { "⌘↩" } else { "Ctrl+Enter" }, t("ask")))
                     .when(self.core.recording_active(), |el| el.child(t("recording"))),
             )
     }
