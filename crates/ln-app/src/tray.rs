@@ -31,6 +31,11 @@ fn icon(recording: bool) -> Icon {
 }
 
 pub fn install(core: Arc<Core>, handle: AnyWindowHandle, view: Entity<AppView>, cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    if let Err(error) = gtk::init() {
+        tracing::warn!("tray unavailable: {error}");
+        return;
+    }
     let menu = Menu::new();
     let record = MenuItem::new(t("record"), true, None);
     let search = MenuItem::new(t("search"), true, None);
@@ -52,10 +57,15 @@ pub fn install(core: Arc<Core>, handle: AnyWindowHandle, view: Entity<AppView>, 
         let mut was_recording = false;
         loop {
             cx.background_executor().timer(Duration::from_millis(250)).await;
+            #[cfg(target_os = "linux")]
+            while gtk::events_pending() {
+                gtk::main_iteration_do(false);
+            }
             let rec = core.recording_active();
             if rec != was_recording {
                 was_recording = rec;
                 let _ = tray.set_icon(Some(icon(rec)));
+                #[cfg(target_os = "macos")]
                 tray.set_icon_as_template(!rec);
                 record.set_text(if rec { t("stop") } else { t("record") });
             }

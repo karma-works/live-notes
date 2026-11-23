@@ -19,6 +19,9 @@ use gpui_kit::*;
 use ln_core::Core;
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
+const APP_ID: &str = "works.karma.livenotes";
+
 actions!(
     live_notes,
     [
@@ -86,23 +89,25 @@ fn main() {
     });
     application.run(move |cx| {
         gpui_kit::init(cx);
+        #[cfg(target_os = "linux")]
+        cx.set_app_identity(APP_ID, "Live Notes");
         theme::apply(cx);
         cx.bind_keys([
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("cmd-n", NewNote, None),
-            KeyBinding::new("alt-cmd-r", ToggleRecording, None),
-            KeyBinding::new("cmd-k", OpenSearch, None),
-            KeyBinding::new("cmd-e", ToggleEdit, None),
-            KeyBinding::new("cmd-,", OpenSettings, None),
-            KeyBinding::new("cmd-\\", ToggleSidebar, None),
-            KeyBinding::new("cmd-w", CloseWindow, None),
-            KeyBinding::new("cmd-[", GoBack, None),
-            KeyBinding::new("cmd-]", GoForward, None),
+            KeyBinding::new("secondary-q", Quit, None),
+            KeyBinding::new("secondary-n", NewNote, None),
+            KeyBinding::new("secondary-alt-r", ToggleRecording, None),
+            KeyBinding::new("secondary-k", OpenSearch, None),
+            KeyBinding::new("secondary-e", ToggleEdit, None),
+            KeyBinding::new("secondary-,", OpenSettings, None),
+            KeyBinding::new("secondary-\\", ToggleSidebar, None),
+            KeyBinding::new("secondary-w", CloseWindow, None),
+            KeyBinding::new("secondary-[", GoBack, None),
+            KeyBinding::new("secondary-]", GoForward, None),
             // Backspace and Delete remove the open note unless a text field has the keyboard. ⌘⌫ is
             // bound last, so menus and tooltips show it; inside a text field the field keeps it.
             KeyBinding::new("backspace", DeleteNote, Some("LiveNotes && !Input")),
             KeyBinding::new("delete", DeleteNote, Some("LiveNotes && !Input")),
-            KeyBinding::new("cmd-backspace", DeleteNote, None),
+            KeyBinding::new("secondary-backspace", DeleteNote, None),
         ]);
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
         // Every quit path ends here: menu, ⌘Q, tray, Dock, logout and AppleScript `quit`.
@@ -142,6 +147,8 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1180.), px(760.)), cx))),
             titlebar: Some(gpui_kit::component::TitleBar::title_bar_options()),
+            #[cfg(target_os = "linux")]
+            app_id: Some(APP_ID.into()),
             window_min_size: Some(size(px(760.), px(480.))),
             ..Default::default()
         };

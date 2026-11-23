@@ -31,10 +31,54 @@ jobs:
           cargo deny check
 
   linux:
-    name: Linux (UI-free crates)
-    runs-on: ubuntu-24.04
+    name: Linux (build, test, lint)
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - name: Tests of platform-independent crates
-        run: cargo test -p ln-types -p ln-notes -p ln-index -p ln-ai -p ln-models
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libasound2-dev libfontconfig1-dev libclang-dev libgtk-3-dev \
+            libayatana-appindicator3-dev libwayland-dev libxkbcommon-x11-dev libvulkan-dev \
+            libx11-dev libxcb1-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --locked --workspace
+      - name: Build app
+        run: cargo build --locked -p ln-app
+      - name: Check Vulkan transcription
+        if: matrix.runner == 'ubuntu-24.04'
+        run: |
+          sudo apt-get install -y glslc
+          cargo check --locked -p ln-app --features vulkan
+
+  arch-package:
+    name: Arch Linux package (x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with makepkg
+        run: |
+          mkdir -p "$RUNNER_TEMP/live-notes-arch"
+          docker run --rm -v "$PWD:/checkout:ro" -v "$RUNNER_TEMP/live-notes-arch:/output" archlinux:base-devel bash -euc '
+            pacman -Syu --noconfirm --needed git sudo
+            useradd --create-home builder
+            printf "builder ALL=(root) NOPASSWD: /usr/bin/pacman\n" > /etc/sudoers.d/builder
+            cp -r /checkout/. /home/builder/live-notes
+            chown -R builder:builder /home/builder/live-notes
+            cd /home/builder/live-notes/packaging/arch
+            runuser -u builder -- makepkg --syncdeps --noconfirm
+            cp ./*.pkg.tar.zst /output/
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-notes-arch-x86_64
+          path: ${{ runner.temp }}/live-notes-arch/*.pkg.tar.zst
+          if-no-files-found: error

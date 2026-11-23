@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Live Notes
+Comment=Record and transcribe conversations into searchable notes
+Exec=live-notes
+Icon=works.karma.livenotes
+Terminal=false
+Categories=Office;

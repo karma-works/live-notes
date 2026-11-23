@@ -508,11 +508,11 @@ Regeln:
 
 | Trait | macOS (v1) | Linux (v2) |
 |---|---|---|
-| `SystemAudioCapture` | Core Audio Process Tap | PipeWire Monitor-Source (pro App über PipeWire-Graph) |
-| `MicCapture` (+ AEC) | Voice-Processing-I/O | PipeWire + `webrtc-audio-processing` |
-| `Ocr` | Apple Vision | Gemma-Bildverständnis (Tesseract als Rückfall) |
-| `PdfText` | PDFKit | pdfium (`pdfium-render`) |
-| `SecretStore` | Schlüsselbund | Secret Service (über `keyring`) |
+| `SystemAudioCapture` | Core Audio Process Tap | PipeWire-Monitor des Ausgabegeräts oder direkte Verbindung zu einem Wiedergabestream |
+| `MicCapture` (+ AEC) | Voice-Processing-I/O | PipeWire-Mikrofon (Echo-Unterdrückung über einen entsprechend konfigurierten PipeWire-Eingang) |
+| `Ocr` | Apple Vision | Tesseract für OCR, Bildverständnis über das konfigurierte Modell |
+| `PdfText` | PDFKit | Poppler für Text, Tesseract für gescannte Seiten |
+| `SecretStore` | Schlüsselbund | Secret Service (über `secret-tool`) |
 | `FileWatcher` | FSEvents | inotify (beides über `notify`) |
 | `Tray`, `GlobalHotkey` | NSStatusItem, Carbon-Hotkey | `tray-icon` (StatusNotifierItem), `global-hotkey` / XDG-Portal |
 | GPU | Metal (GPUI, whisper.cpp, llama.cpp) | Vulkan (GPUI), CUDA/Vulkan/CPU (whisper.cpp, llama.cpp) |

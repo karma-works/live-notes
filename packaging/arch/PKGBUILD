@@ -1,0 +1,37 @@
+pkgname=live-notes
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Record and transcribe conversations into searchable notes'
+arch=('x86_64' 'aarch64')
+url='https://github.com/karma-works/live-notes'
+license=('Apache-2.0')
+# Keep GCC LTO objects out of archives linked by Rust's linker. Cargo enables its own thin LTO.
+options=('!lto')
+depends=('alsa-lib' 'fontconfig' 'gtk3' 'libayatana-appindicator' 'libsecret'
+         'libxkbcommon-x11' 'libxcb' 'pipewire-audio' 'poppler' 'tesseract'
+         'tesseract-data-eng' 'vulkan-icd-loader' 'wayland' 'wireplumber' 'xdg-utils')
+makedepends=('clang' 'cmake' 'rustup')
+makedepends_x86_64=('shaderc' 'vulkan-headers')
+optdepends=('gnome-keyring: Secret Service provider for saving API keys'
+            'tesseract-data-deu: German OCR'
+            'tesseract-data-chi_sim: Simplified Chinese OCR'
+            'tesseract-data-chi_tra: Traditional Chinese OCR'
+            'xdg-desktop-portal: Wayland desktop integration')
+_repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+build() {
+    cd "$_repo"
+    local features=()
+    if [[ $CARCH == x86_64 ]]; then
+        features=(--features vulkan)
+    fi
+    cargo build --release --locked --target-dir "$srcdir/target" -p ln-app "${features[@]}"
+}
+
+package() {
+    install -Dm755 "$srcdir/target/release/live-notes" "$pkgdir/usr/bin/live-notes"
+    install -Dm644 "$_repo/packaging/arch/works.karma.livenotes.desktop" \
+        "$pkgdir/usr/share/applications/works.karma.livenotes.desktop"
+    install -Dm644 "$_repo/docs/logo-256.png" \
+        "$pkgdir/usr/share/icons/hicolor/256x256/apps/works.karma.livenotes.png"
+}

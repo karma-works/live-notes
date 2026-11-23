@@ -1,10 +1,13 @@
 //! Operating-system abstraction (SPEC §7.3). Only this crate and `ln-app` touch platform APIs.
-//! v1 implements macOS; other platforms return [`Error::Unsupported`] until Linux lands (v2).
+//! macOS and Linux provide audio capture and document extraction.
 
 mod secrets;
 
 #[cfg(target_os = "macos")]
 mod macos;
+
+#[cfg(target_os = "linux")]
+mod linux;
 
 pub use secrets::{KeychainStore, MemoryStore, SecretStore};
 
@@ -68,7 +71,11 @@ pub fn start_microphone(tx: crossbeam_channel::Sender<AudioChunk>) -> Result<Box
     {
         macos::mic::start(tx)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::start_capture(tx, false)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = tx;
         Err(Error::Unsupported)
@@ -81,7 +88,11 @@ pub fn start_system_audio(tx: crossbeam_channel::Sender<AudioChunk>) -> Result<B
     {
         macos::system_audio::start(tx)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::start_capture(tx, true)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = tx;
         Err(Error::Unsupported)
@@ -117,7 +128,11 @@ pub fn ocr_image(path: &std::path::Path, languages: &[&str]) -> Result<String> {
     {
         macos::ocr::recognize(path, languages)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::ocr_image(path, languages)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = (path, languages);
         Err(Error::Unsupported)
@@ -130,7 +145,11 @@ pub fn pdf_pages(path: &std::path::Path) -> Result<Vec<String>> {
     {
         macos::pdf::pages(path)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::pdf_pages(path)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = path;
         Err(Error::Unsupported)
