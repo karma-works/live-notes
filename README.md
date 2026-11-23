@@ -64,9 +64,11 @@ Seriennummer ihres aktiven Wiedergabestreams setzen. Dabei wird dieser Stream di
 Die Umgebungsvariablen werden beim Start einer Aufnahme gelesen. Ein Headset verhindert, dass die
 Stimme der Gegenseite über Lautsprecher zusätzlich im Mikrofon landet.
 
-Das globale Kürzel **Alt+Super+R** läuft unter Wayland über das GlobalShortcuts-Portal und unter
-X11 direkt. Unter Wayland entscheidet das Portal über die tatsächliche Belegung. Das Tray-Symbol
-erscheint in einer Leiste mit StatusNotifier-Unterstützung. Im Fenster funktioniert **Ctrl+Alt+R**.
+Unter X11 startet und stoppt **Alt+Super+R** die Aufnahme. Unter Wayland meldet Live Notes
+dieselbe Belegung als Vorschlag beim GlobalShortcuts-Portal an. Unter Hyprland lässt sich die
+Portal-Aktion `works.karma.livenotes:toggle-recording` mit [einem globalen Tastenkürzel](https://wiki.hypr.land/configuring/core/binds/globals/#d-bus-global-shortcuts)
+belegen. Das Tray-Symbol erscheint in einer Leiste mit StatusNotifier-Unterstützung. Im Fenster
+funktioniert **Ctrl+Alt+R**.
 
 Das Arch-Paket für x86_64 aktiviert Vulkan-Transkription. Whisper kann auf die CPU zurückfallen,
 wenn keine verwendbare Vulkan-GPU verfügbar ist. Mit `LN_WHISPER_CPU=1` lässt sich die CPU
