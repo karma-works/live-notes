@@ -15,7 +15,7 @@ pub enum UseTask {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UseCost {
-    /// Runs on this Mac.
+    /// Runs on this device.
     Local,
     /// USD per 1M input / output tokens.
     PerToken { input: f64, output: f64 },
