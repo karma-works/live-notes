@@ -56,7 +56,9 @@ semantische Suche und lokale KI-Modelle muss `llama-server` aus llama.cpp im `PA
 API-Schlüssel benötigen einen Secret-Service-Anbieter wie GNOME Keyring oder KWallet.
 Für OCR lassen sich zusätzliche Tesseract-Sprachpakete wie `tesseract-data-deu` installieren.
 
-Live Notes verwendet standardmäßig das Mikrofon und die Ausgabe der Sitzung. Mit
+Live Notes verwendet standardmäßig das Standardmikrofon und den Ton aller Ausgabegeräte, also
+auch eines Headsets, das nicht die Standardausgabe ist. Später verbundene Ausgabegeräte werden
+während der Aufnahme hinzugenommen. Mit
 `wpctl status` und `wpctl inspect <ID>` kannst du den Knotennamen (`node.name`) oder die
 Seriennummer (`object.serial`) für `LN_PIPEWIRE_MICROPHONE` oder `LN_PIPEWIRE_OUTPUT` ermitteln.
 Für Ton aus einer einzelnen App kannst du `LN_PIPEWIRE_APPLICATION` auf den Knotennamen oder die
