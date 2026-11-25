@@ -239,6 +239,7 @@ fn link_output_monitors(graph: &Graph, input: u64) -> Result<(Vec<u64>, usize)> 
 
 fn link_all_outputs(input_name: String) -> Result<(Sender<()>, JoinHandle<()>)> {
     let mut input = None;
+    let mut known = 0;
     for _ in 0..20 {
         let graph = Graph::load()?;
         if let Some(node) = graph.find_node(&input_name, None) {
@@ -249,6 +250,7 @@ fn link_all_outputs(input_name: String) -> Result<(Sender<()>, JoinHandle<()>)> 
                 }
                 tracing::info!("system audio: recording {linked} output device(s)");
                 input = Some(node);
+                known = linked;
                 break;
             }
         }
@@ -259,7 +261,6 @@ fn link_all_outputs(input_name: String) -> Result<(Sender<()>, JoinHandle<()>)> 
     let linker = thread::Builder::new()
         .name("pipewire-relink".into())
         .spawn(move || {
-            let mut known = 0;
             while let Err(RecvTimeoutError::Timeout) = stop_rx.recv_timeout(RELINK_INTERVAL) {
                 match Graph::load().and_then(|graph| link_output_monitors(&graph, input)) {
                     Ok((_, linked)) if linked != known => {
