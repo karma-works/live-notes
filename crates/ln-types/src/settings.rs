@@ -21,6 +21,27 @@ pub struct Settings {
     pub costs: Costs,
     pub sources: Vec<SourceSetting>,
     pub categories: Categories,
+    /// Local HTTP endpoint for the browser extension (`docs/clip-api.md`).
+    pub clip: ClipSettings,
+}
+
+/// Default port of the clip endpoint on 127.0.0.1.
+pub const CLIP_DEFAULT_PORT: u16 = 47823;
+
+/// The local endpoint that saves web pages and YouTube videos as notes. The bearer token lives
+/// in the secret store, never here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ClipSettings {
+    pub enabled: bool,
+    /// Port on 127.0.0.1; 0 picks a free port (tests).
+    pub port: u16,
+}
+
+impl Default for ClipSettings {
+    fn default() -> Self {
+        ClipSettings { enabled: true, port: CLIP_DEFAULT_PORT }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -438,6 +459,7 @@ impl Default for Settings {
             costs: Costs::default(),
             sources: vec![],
             categories: Categories::default(),
+            clip: ClipSettings::default(),
         }
     }
 }
@@ -596,6 +618,16 @@ mod tests {
         assert_eq!(s.transcription.mode, TranscriptionMode::OpenAiCheap);
         assert_eq!(s.transcription.openai_model, "gpt-transcribe");
         assert_eq!(s.roles.assistant.model, "google/gemma-4-26b-a4b-it");
+        assert_eq!(s.clip, ClipSettings { enabled: true, port: CLIP_DEFAULT_PORT });
+    }
+
+    #[test]
+    fn clip_settings_roundtrip() {
+        let s: Settings = toml::from_str("[clip]\nenabled = false\n").unwrap();
+        assert!(!s.clip.enabled);
+        assert_eq!(s.clip.port, CLIP_DEFAULT_PORT);
+        let back: Settings = toml::from_str(&toml::to_string_pretty(&s).unwrap()).unwrap();
+        assert_eq!(back.clip, s.clip);
     }
 
     #[test]

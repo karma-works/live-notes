@@ -566,3 +566,49 @@ fn failed_consolidation_keeps_source_and_can_be_retried() {
     assert!(!std::fs::read_to_string(result).unwrap().contains("ln:transcript"));
     core.shutdown();
 }
+
+#[test]
+fn images_are_stored_once_and_follow_moved_notes() {
+    let (_dir, core, _rx) = core_with("http://127.0.0.1:9");
+    let note = core.create_note(None).unwrap();
+    let src = tempfile::tempdir().unwrap();
+    let shot = src.path().join("Screen shot 1.png");
+    std::fs::write(&shot, b"\x89PNG fake").unwrap();
+    let copy = src.path().join("copy.PNG");
+    std::fs::write(&copy, b"\x89PNG fake").unwrap();
+
+    let link = core.import_image(&note, &shot).unwrap();
+    let again = core.import_image(&note, &copy).unwrap();
+    let (alt, target) = ln_notes::parse_image_line(&link).unwrap();
+    assert_eq!(alt, "Screen shot 1");
+    let name = target.strip_prefix("assets/").unwrap();
+    assert!(name.len() == 16 && name.ends_with(".png") && name[..12].chars().all(|c| c.is_ascii_hexdigit()), "{name}");
+    assert_eq!(again, format!("![copy]({target})"));
+    let assets = note.parent().unwrap().join("assets");
+    assert_eq!(std::fs::read_dir(&assets).unwrap().count(), 1, "same content is stored once");
+    assert!(core.import_image(&note, &src.path().join("x.pdf")).is_err());
+    let pasted = core.import_image_bytes(&note, b"clip", "png", "").unwrap();
+    assert!(pasted.starts_with("![](assets/") && pasted.ends_with(".png)"));
+
+    std::fs::write(&note, format!("# Bilder\n\n{link}\n{pasted}\n")).unwrap();
+    // Images are neither notes nor folders.
+    assert_eq!(core.list_notes().len(), 1);
+    assert!(core.note_folders().is_empty());
+
+    // Renaming keeps the folder, so the relative links stay valid.
+    let renamed = core.rename_note(&note, "Bilder").unwrap();
+    assert_eq!(renamed.parent(), note.parent());
+    // Moving copies the linked images along; the originals stay for other notes.
+    core.create_folder("Projekte").unwrap();
+    let moved = core.move_note(&renamed, "Projekte").unwrap();
+    let text = std::fs::read_to_string(&moved).unwrap();
+    let targets = ln_notes::image_targets(&text);
+    assert_eq!(targets.len(), 2);
+    for t in targets {
+        let p = moved.parent().unwrap().join(ln_notes::local_target(&t).unwrap());
+        assert!(p.is_file(), "{} exists after the move", p.display());
+    }
+    assert!(assets.join(name).is_file());
+    assert_eq!(core.list_notes().len(), 1);
+    core.shutdown();
+}

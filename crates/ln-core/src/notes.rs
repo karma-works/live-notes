@@ -25,7 +25,7 @@ impl Core {
     /// All Markdown notes, newest first.
     pub fn list_notes(&self) -> Vec<NoteEntry> {
         let root = self.notes_dir();
-        let files = ln_ingest::scan(&root, &ln_ingest::ScanOptions::default());
+        let files = ln_ingest::scan(&root, &ln_ingest::ScanOptions { skip_note_assets: true, ..Default::default() });
         let mut out: Vec<NoteEntry> = files
             .into_iter()
             .filter(|f| f.path.extension().is_some_and(|e| e == "md"))
@@ -151,10 +151,17 @@ impl Core {
         Some(new)
     }
 
+    /// Moves a note to another folder. Images it links relatively (`assets/…`) are copied
+    /// along, so its links keep working; the originals stay, as other notes may use them too.
     pub fn move_note(&self, path: &Path, folder: &str) -> Result<PathBuf> {
         let dir = self.notes_dir().join(folder);
         std::fs::create_dir_all(&dir)?;
         let new = unique_path(&dir.join(path.file_name().unwrap_or_default()), None);
+        if let (Some(old_dir), Ok(text)) = (path.parent(), std::fs::read_to_string(path))
+            && old_dir != dir
+        {
+            copy_linked_images(&text, old_dir, &dir);
+        }
         std::fs::rename(path, &new)?;
         self.emit(CoreEvent::NotesChanged);
         Ok(new)
@@ -179,13 +186,24 @@ impl Core {
         Ok(())
     }
 
-    /// Copies a dropped image into `assets/` next to the note and returns the relative link.
+    /// Copies a dropped image into `assets/` next to the note, named by its content
+    /// (`assets/<blake3 prefix>.<ext>`), and returns the Markdown link `![<file stem>](assets/…)`.
+    /// The same image dropped twice is stored once.
     pub fn import_image(&self, note: &Path, image: &Path) -> Result<String> {
-        let dir = note.parent().unwrap_or(Path::new(".")).join("assets");
-        std::fs::create_dir_all(&dir)?;
-        let dest = unique_path(&dir.join(image.file_name().unwrap_or_default()), None);
-        std::fs::copy(image, &dest)?;
-        Ok(format!("assets/{}", dest.file_name().unwrap().to_string_lossy()))
+        if !ln_notes::is_image_path(image) {
+            return Err(crate::Error::User(format!("not an image: {}", image.display())));
+        }
+        let bytes = std::fs::read(image)?;
+        let ext = image.extension().and_then(|e| e.to_str()).unwrap_or("png");
+        let alt = image.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        self.import_image_bytes(note, &bytes, ext, alt)
+    }
+
+    /// Stores image bytes (e.g. pasted from the clipboard) like [`Core::import_image`].
+    pub fn import_image_bytes(&self, note: &Path, bytes: &[u8], ext: &str, alt: &str) -> Result<String> {
+        let dir = note.parent().unwrap_or(Path::new("."));
+        let rel = ln_notes::store_asset(dir, bytes, ext)?;
+        Ok(ln_notes::image_markdown(alt, &rel))
     }
 
     // ---- suggested additions (SPEC §5 F3: only accepted ones go into the file) ------------
@@ -217,6 +235,27 @@ impl Core {
         let mut a = self.additions.lock();
         let v = a.get_mut(path)?;
         (i < v.len()).then(|| v.remove(i))
+    }
+}
+
+/// Copies the images `text` links relatively from `from` to the same relative path in `to`.
+/// Only files inside `assets/` are copied; existing files are kept (names are content hashes).
+fn copy_linked_images(text: &str, from: &Path, to: &Path) {
+    for target in ln_notes::image_targets(text) {
+        let Some(rel) = ln_notes::local_target(&target) else { continue };
+        let safe = rel.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+        if !safe || rel.components().next().is_none_or(|c| c.as_os_str() != ln_notes::ASSETS_DIR) {
+            continue;
+        }
+        let (src, dest) = (from.join(&rel), to.join(&rel));
+        if !src.is_file() || dest.exists() {
+            continue;
+        }
+        if let Some(p) = dest.parent()
+            && let Err(e) = std::fs::create_dir_all(p).and_then(|_| std::fs::copy(&src, &dest))
+        {
+            tracing::warn!("copy image {}: {e}", rel.display());
+        }
     }
 }
 

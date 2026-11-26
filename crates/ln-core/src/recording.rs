@@ -82,6 +82,15 @@ pub(crate) struct Ctx {
 enum AsrJob {
     Section(Arc<Ctx>, PendingSegment),
     Redo(Arc<Ctx>, usize, Lang),
+    /// Sections of an audio file that is not a recording (a clipped video). `lang` fixes the
+    /// language when it is known; the transcribed segments go back on `reply`.
+    File {
+        sections: Vec<PendingSegment>,
+        lang: Option<Lang>,
+        /// The file's last batch: release the model afterwards (unless a recording needs it).
+        last: bool,
+        reply: Sender<std::result::Result<Vec<Segment>, String>>,
+    },
     /// All sections of this recording are queued: write the note, then summarize.
     Finish {
         ctx: Arc<Ctx>,
@@ -96,7 +105,7 @@ pub(crate) struct AsrWorker {
     key: String,
     tx: Sender<AsrJob>,
     name: Arc<Mutex<String>>,
-    cloud: bool,
+    pub(crate) cloud: bool,
     /// Disconnects once the worker thread has ended and dropped its model.
     done: Receiver<()>,
 }
@@ -219,6 +228,22 @@ impl Core {
         let w = Arc::new(AsrWorker { key, tx, name, cloud, done });
         *g = Some(w.clone());
         Ok(w)
+    }
+
+    /// Transcribes sections of an audio file (not a recording) on the shared worker, so only one
+    /// Whisper model is ever loaded. Blocks until done; returns the transcriber's name too.
+    pub(crate) fn transcribe_sections(
+        self: &Arc<Self>,
+        sections: Vec<PendingSegment>,
+        lang: Option<Lang>,
+        last: bool,
+    ) -> Result<(Vec<Segment>, String, bool)> {
+        let worker = self.asr_worker()?;
+        let (reply, rx) = crossbeam_channel::bounded(1);
+        worker.tx.send(AsrJob::File { sections, lang, last, reply }).map_err(|_| Error::User("transcription worker stopped".into()))?;
+        let segs = rx.recv().map_err(|_| Error::User("transcription worker stopped".into()))?.map_err(Error::User)?;
+        let name = worker.name.lock().clone();
+        Ok((segs, name, worker.cloud))
     }
 
     /// Ends the transcription worker and waits until it has released its model. whisper.cpp's
@@ -682,16 +707,53 @@ fn asr_worker_loop(weak: &Weak<Core>, loader: Loader, rx: Receiver<AsrJob>, name
                 }
             }
         }
-        let ctx = match &job {
-            AsrJob::Section(c, _) | AsrJob::Redo(c, _, _) | AsrJob::Finish { ctx: c, .. } => c.clone(),
+        let session = match &job {
+            AsrJob::Section(c, _) | AsrJob::Redo(c, _, _) | AsrJob::Finish { ctx: c, .. } => c.id,
+            // Session ids start at 1: a file always gets a fresh context.
+            AsrJob::File { .. } => 0,
         };
         if let Some(e) = engine.as_mut()
-            && ctx.id != current_session
+            && (session != current_session || session == 0)
         {
             e.reset();
-            current_session = ctx.id;
+            current_session = session;
         }
         match job {
+            AsrJob::File { sections, lang, last, reply } => {
+                let mut out = Vec::new();
+                let result = if let Some(e) = engine.as_mut() {
+                    // Files are transcribed while no recording runs: keep the machine usable.
+                    if !cloud && !background {
+                        background = true;
+                        ln_platform::set_current_thread_background(true);
+                        e.transcriber_mut().set_background(true);
+                    }
+                    e.forced_language = lang;
+                    for (_, r) in e.process_packed(sections) {
+                        match r {
+                            Ok(Some(seg)) => out.push(seg),
+                            Ok(None) => {}
+                            Err(err) => tracing::warn!("clip transcription: {err}"),
+                        }
+                    }
+                    e.reset();
+                    Ok(out)
+                } else {
+                    Err(tr(
+                        core.ui_language(),
+                        "Das Transkriptionsmodell konnte nicht geladen werden.",
+                        "The transcription model could not be loaded.",
+                    ))
+                };
+                let _ = reply.send(result);
+                // Release the model unless a recording needs it or more work is queued.
+                if last && rx.is_empty() && stash.is_none() && core.recording.lock().is_none() {
+                    engine = None;
+                    load_failed = false;
+                    background = false;
+                    ln_platform::set_current_thread_background(false);
+                }
+            }
             AsrJob::Section(ctx, p) => {
                 let Some(e) = engine.as_mut() else { continue };
                 // No recording running: the rest of a stopped recording may take its time, but must

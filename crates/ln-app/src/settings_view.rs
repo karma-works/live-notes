@@ -30,6 +30,7 @@ pub struct SettingsView {
     category_name: Entity<InputState>,
     category_hint: Entity<InputState>,
     decision_models: [Entity<InputState>; 2],
+    clip_port: Entity<InputState>,
 }
 
 const EXTRA_LANGS: [&str; 6] = ["it", "pt", "nl", "ja", "ko", "ru"];
@@ -51,8 +52,10 @@ impl SettingsView {
             cx.new(|cx| InputState::new(window, cx).default_value(s.categories.openrouter_model.clone())),
             cx.new(|cx| InputState::new(window, cx).default_value(s.categories.openai_model.clone())),
         ];
+        let clip_port = cx.new(|cx| InputState::new(window, cx).default_value(s.clip.port.to_string()));
         SettingsView {
             core,
+            clip_port,
             openai_key,
             openrouter_key,
             role_models,
@@ -212,6 +215,64 @@ impl SettingsView {
                 },
             ))))
         })
+    }
+
+    /// The local endpoint for the browser extension (`docs/clip-api.md`).
+    fn render_clip(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+        let s = self.core.settings();
+        let mut sec = Self::section(t("clip-section"), cx)
+            .child(div().text_xs().text_color(theme.muted_foreground).child(t("clip-hint")))
+            .child(Switch::new("clip-enabled").label(t("clip-enabled")).checked(s.clip.enabled).on_change(cx.listener(
+                |this, v: &bool, _, cx| {
+                    let v = *v;
+                    this.core.update_settings(|s| s.clip.enabled = v);
+                    cx.notify();
+                },
+            )));
+        let (status, color) = match self.core.clip_server_status() {
+            ln_core::ClipServerStatus::Running { port } => (format!("{} 127.0.0.1:{port}", t("clip-running")), theme.success),
+            ln_core::ClipServerStatus::Off => (t("clip-off").to_string(), theme.muted_foreground),
+            ln_core::ClipServerStatus::Failed(e) => (format!("{} {e}", t("clip-failed")), theme.danger),
+        };
+        sec = sec.child(div().text_xs().text_color(color).child(status));
+        let port_input = self.clip_port.clone();
+        sec = sec.child(
+            h_flex()
+                .gap_2()
+                .child(div().w(px(150.)).flex_none().text_xs().text_color(theme.muted_foreground).child(t("clip-port")))
+                .child(div().w(px(100.)).child(Input::new(&self.clip_port)))
+                .child(Button::new("clip-port-save").small().label(t("save-key")).on_click(cx.listener(move |this, _, window, cx| {
+                    match port_input.read(cx).value().trim().parse::<u16>() {
+                        Ok(p) if p >= 1024 => this.core.update_settings(|s| s.clip.port = p),
+                        _ => window.push_notification(t("clip-port-invalid"), cx),
+                    }
+                    cx.notify();
+                }))),
+        );
+        let token = self.core.clip_token();
+        let tail: String = token.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+        sec = sec.child(
+            h_flex()
+                .gap_2()
+                .child(div().w(px(150.)).flex_none().text_xs().text_color(theme.muted_foreground).child(t("clip-token")))
+                .child(div().flex_1().text_sm().font_family("monospace").child(format!("{}{tail}", "•".repeat(12))))
+                .child(Button::new("clip-token-copy").small().label(t("clip-copy")).on_click(cx.listener(|this, _, window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(this.core.clip_token()));
+                    window.push_notification(t("clip-copied"), cx);
+                })))
+                .child(Button::new("clip-token-new").small().ghost().label(t("clip-regenerate")).on_click(cx.listener(
+                    |this, _, window, cx| {
+                        this.core.regenerate_clip_token();
+                        window.push_notification(t("clip-regenerated"), cx);
+                        cx.notify();
+                    },
+                ))),
+        );
+        if !self.core.clip_token_stored() {
+            sec = sec.child(div().text_xs().text_color(theme.warning).child(t("clip-token-not-stored")));
+        }
+        sec
     }
 
     pub fn chatgpt_changed(&mut self, first_sign_in: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -960,6 +1021,7 @@ impl Render for SettingsView {
                 .child(assistant)
                 .child(self.render_categories(cx))
                 .child(live)
+                .child(self.render_clip(cx))
                 .child(privacy)
                 .child(models)
                 .child(costs),

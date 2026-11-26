@@ -73,9 +73,25 @@ fn main() {
         core.shutdown();
         std::process::exit(0);
     }
+    // Headless browser-extension endpoint (verification): `--serve-clip` serves until killed and
+    // prints status and token, so `curl` can drive `docs/clip-api.md` without a window.
+    if args.iter().any(|a| a == "--serve-clip") {
+        core.start_clip_server();
+        let status = format!("{:?}", core.clip_server_status());
+        tracing::info!("serve-clip: {status}");
+        println!("{}", serde_json::json!({ "status": status, "token": core.clip_token() }));
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
+    }
     tracing::info!("Live Notes {} started, ui={:?}", env!("CARGO_PKG_VERSION"), core.ui_language());
     i18n::set_language(core.ui_language());
     core.resume_downloads();
+    // Local endpoint for the browser extension; reading the token may wait for the keyring.
+    {
+        let c = core.clone();
+        std::thread::spawn(move || c.start_clip_server());
+    }
 
     // Markdown files opened from the Finder ("Open With", default app, drag onto the Dock icon)
     // arrive as file:// URLs, also before the window exists; the window picks them up in order.

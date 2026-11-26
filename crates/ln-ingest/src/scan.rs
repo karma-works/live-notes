@@ -7,11 +7,14 @@ pub struct ScanOptions {
     /// Extra glob patterns from the user (gitignore syntax).
     pub excludes: Vec<String>,
     pub max_file_size: u64,
+    /// Skip `assets/` folders: in the notes folder they hold the images of notes, which are
+    /// neither notes nor sources of their own.
+    pub skip_note_assets: bool,
 }
 
 impl Default for ScanOptions {
     fn default() -> Self {
-        ScanOptions { include_subdirs: true, excludes: vec![], max_file_size: 50 * 1024 * 1024 }
+        ScanOptions { include_subdirs: true, excludes: vec![], max_file_size: 50 * 1024 * 1024, skip_note_assets: false }
     }
 }
 
@@ -56,7 +59,11 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> Vec<ScannedFile> {
             b.overrides(o);
         }
     }
-    b.filter_entry(|e| !(e.file_type().is_some_and(|t| t.is_dir()) && e.file_name().to_str().is_some_and(|n| SKIP_DIRS.contains(&n))));
+    let skip_assets = opts.skip_note_assets;
+    b.filter_entry(move |e| {
+        !(e.file_type().is_some_and(|t| t.is_dir())
+            && e.file_name().to_str().is_some_and(|n| SKIP_DIRS.contains(&n) || (skip_assets && n == ln_notes::ASSETS_DIR)))
+    });
     let mut out = Vec::new();
     for entry in b.build().flatten() {
         if !entry.file_type().is_some_and(|t| t.is_file()) {
@@ -75,6 +82,11 @@ pub fn scan(root: &Path, opts: &ScanOptions) -> Vec<ScannedFile> {
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
+}
+
+/// Whether `path` lies in an `assets/` folder below `root` (images of notes).
+pub fn in_note_assets(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root).ok().and_then(Path::parent).is_some_and(|rel| rel.components().any(|c| c.as_os_str() == ln_notes::ASSETS_DIR))
 }
 
 #[cfg(test)]
@@ -101,5 +113,24 @@ mod tests {
         assert_eq!(flat.len(), 1);
         let ex = scan(r, &ScanOptions { excludes: vec!["sub/**".into()], ..Default::default() });
         assert_eq!(ex.len(), 1);
+    }
+
+    #[test]
+    fn skips_note_assets_on_request() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        std::fs::create_dir_all(r.join("Projekte/assets")).unwrap();
+        std::fs::write(r.join("Projekte/a.md"), "# A").unwrap();
+        std::fs::write(r.join("Projekte/assets/0123456789ab.png"), "png").unwrap();
+        std::fs::write(r.join("Projekte/assets/stray.md"), "# not a note").unwrap();
+        let names = |opts: &ScanOptions| -> Vec<String> {
+            scan(r, opts).iter().map(|f| f.path.strip_prefix(r).unwrap().to_string_lossy().into_owned()).collect()
+        };
+        assert_eq!(names(&ScanOptions { skip_note_assets: true, ..Default::default() }), vec!["Projekte/a.md"]);
+        assert_eq!(names(&ScanOptions::default()).len(), 3);
+        assert!(in_note_assets(r, &r.join("Projekte/assets/0123456789ab.png")));
+        assert!(!in_note_assets(r, &r.join("Projekte/a.md")));
+        // Only folders below the root count: a notes folder that is itself called `assets` is fine.
+        assert!(!in_note_assets(&r.join("Projekte/assets"), &r.join("Projekte/assets/x.md")));
     }
 }

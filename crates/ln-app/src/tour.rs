@@ -151,6 +151,13 @@ pub fn run(core: Arc<Core>, handle: AnyWindowHandle, view: Entity<AppView>, cx: 
         r.check("menu_opens_settings", page == "Settings", page.clone());
         r.check("settings_in_main_window", window_count(cx) == before, format!("windows {before} → {}", window_count(cx)));
         tall_shot(cx, handle, &view, &dir, "07-settings").await;
+        // The browser-extension endpoint runs (or names why not) and has a token to copy.
+        let clip = core.clip_server_status();
+        r.check(
+            "clip_endpoint_status",
+            !matches!(clip, ln_core::ClipServerStatus::Off) && core.clip_token().len() == 64,
+            format!("{clip:?}"),
+        );
 
         // 3. Setup guidance names the missing key.
         let steps = core.setup_steps();
@@ -365,6 +372,85 @@ pub fn run(core: Arc<Core>, handle: AnyWindowHandle, view: Entity<AppView>, cx: 
         r.check("backspace_in_editor_edits_text", matches!(asks, Ok(false)), format!("{asks:?}"));
         dispatch(cx, handle, crate::ToggleEdit);
         wait(cx, 300).await;
+
+        // 4f. Images: a PNG dropped from the file manager onto the reading view lands in
+        //     `assets/` and is linked at the end (a non-image in the same drop is skipped); the
+        //     same image pasted in the editor is linked at the cursor but stored only once.
+        let _ = cx.update_window(handle, |_, window, cx| {
+            use gpui_kit::component::WindowExt as _;
+            window.close_all_dialogs(cx);
+        });
+        let shopping = notes.join("Einkauf.md");
+        let png = dir.join("Logo Live Notes.png");
+        let _ = std::fs::write(&png, include_bytes!("../../../docs/logo-256.png"));
+        let _ = cx.update_window(handle, |_, window, cx| view.update(cx, |v, cx| v.open_note(shopping.clone(), window, cx)));
+        wait(cx, 600).await;
+        // The platform's drag events, one frame apart. The pointer first moves over the window:
+        // GPUI treats nothing as hovered while the last input was a key press, and drag events
+        // do not count as pointer input (see `NoteView::render`).
+        let drop_at = |cx: &mut AsyncApp, event: fn(Point<Pixels>, &Path) -> PlatformInput| {
+            let png = png.clone();
+            let _ = cx.update_window(handle, move |_, window, cx| {
+                let size = window.viewport_size();
+                window.dispatch_event(event(point(size.width * 0.7, size.height * 0.5), &png), cx);
+            });
+        };
+        drop_at(cx, |position, _| {
+            PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() })
+        });
+        drop_at(cx, |position, png| {
+            let paths = ExternalPaths(vec![png.to_path_buf(), png.with_file_name("tour-report.json")].into());
+            PlatformInput::FileDrop(FileDropEvent::Entered { position, paths })
+        });
+        wait(cx, 300).await;
+        drop_at(cx, |position, _| PlatformInput::FileDrop(FileDropEvent::Pending { position }));
+        wait(cx, 300).await;
+        drop_at(cx, |position, _| PlatformInput::FileDrop(FileDropEvent::Submit { position }));
+        wait(cx, 600).await;
+        let text = std::fs::read_to_string(&shopping).unwrap_or_default();
+        let links = ln_notes::image_targets(&text);
+        let stored = links.first().map(|l| notes.join(l)).is_some_and(|p| p.is_file());
+        r.check("dropped_image_is_linked", links.len() == 1 && stored && text.contains("\n\n![Logo Live Notes](assets/"), text.clone());
+        shot(cx, handle, &dir, "04d-note-image");
+        let note = view.read_with(cx, |v, _| v.note_view());
+        let _ = cx.update_window(handle, |_, window, cx| {
+            if let Some(n) = &note {
+                n.update(cx, |n, cx| n.toggle_mode(window, cx));
+            }
+        });
+        wait(cx, 500).await;
+        let before = cx.update(|cx| cx.read_from_clipboard());
+        cx.update(|cx| {
+            let image = Image::from_bytes(ImageFormat::Png, include_bytes!("../../../docs/logo-256.png").to_vec());
+            cx.write_to_clipboard(ClipboardItem { entries: vec![ClipboardEntry::Image(image)] })
+        });
+        wait(cx, 300).await;
+        let has_image =
+            cx.update(|cx| cx.read_from_clipboard().is_some_and(|c| c.entries().iter().any(|e| matches!(e, ClipboardEntry::Image(_)))));
+        if has_image {
+            let _ = cx.update_window(handle, |_, window, cx| window.dispatch_action(Box::new(gpui_kit::base::input::Paste), cx));
+            wait(cx, 900).await;
+            let text = std::fs::read_to_string(&shopping).unwrap_or_default();
+            let files = std::fs::read_dir(notes.join("assets")).map(|d| d.count()).unwrap_or(0);
+            r.check(
+                "pasted_image_is_linked_once",
+                ln_notes::image_targets(&text).len() == 2 && files == 1,
+                format!("{files} files: {text}"),
+            );
+        } else {
+            // Wayland only hands the clipboard to a client after a real key or button press.
+            eprintln!("tour: skipped pasted_image_is_linked_once: the clipboard does not take a test image here");
+        }
+        if let Some(item) = before {
+            cx.update(|cx| cx.write_to_clipboard(item));
+        }
+        let _ = cx.update_window(handle, |_, window, cx| {
+            if let Some(n) = &note {
+                n.update(cx, |n, cx| n.toggle_mode(window, cx));
+            }
+        });
+        wait(cx, 500).await;
+        shot(cx, handle, &dir, "04e-note-images");
 
         // 5. ⌘K opens search; a query finds notes.
         dispatch(cx, handle, crate::OpenSearch);

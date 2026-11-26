@@ -1,0 +1,22 @@
+{
+  "_comment": "Shape of the legacy youtubei/v1/get_transcript response (engagement-panel-searchable-transcript). Hand-made: the endpoint answers FAILED_PRECONDITION for web clients since YouTube moved transcripts to get_panel, so no live sample could be recorded.",
+  "actions": [{
+    "updateEngagementPanelAction": {
+      "targetId": "engagement-panel-searchable-transcript",
+      "content": { "transcriptRenderer": { "content": { "transcriptSearchPanelRenderer": {
+        "body": { "transcriptSegmentListRenderer": { "initialSegments": [
+          { "transcriptSectionHeaderRenderer": { "startMs": "0", "endMs": "1000", "snippet": { "simpleText": "Intro" } } },
+          { "transcriptSegmentRenderer": { "startMs": "1360", "endMs": "3040", "snippet": { "runs": [{ "text": "[♪♪♪]" }] }, "startTimeText": { "simpleText": "0:01" } } },
+          { "transcriptSegmentRenderer": { "startMs": "18640", "endMs": "21880", "snippet": { "runs": [{ "text": "♪ We're no strangers\nto love ♪" }] }, "startTimeText": { "simpleText": "0:18" } } },
+          { "transcriptSegmentRenderer": { "startMs": "22640", "endMs": "26960", "snippet": { "runs": [{ "text": "♪ You know the rules" }, { "text": " and so do I ♪" }] }, "startTimeText": { "simpleText": "0:22" } } },
+          { "transcriptSegmentRenderer": { "startMs": "27000", "endMs": "27000", "snippet": { "runs": [{ "text": "  " }] } } }
+        ] } },
+        "footer": { "transcriptFooterRenderer": { "languageMenu": { "sortFilterSubMenuRenderer": { "subMenuItems": [
+          { "title": "English", "selected": false, "continuation": { "reloadContinuationData": { "continuation": "PARAMS_EN" } } },
+          { "title": "English (auto-generated)", "selected": false, "continuation": { "reloadContinuationData": { "continuation": "PARAMS_EN_ASR" } } },
+          { "title": "German (Germany)", "selected": true, "continuation": { "reloadContinuationData": { "continuation": "PARAMS_DE" } } }
+        ] } } } }
+      } } } }
+    }
+  }]
+}
