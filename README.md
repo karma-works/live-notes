@@ -77,6 +77,18 @@ wenn keine verwendbare Vulkan-GPU verfügbar ist. Mit `LN_WHISPER_CPU=1` lässt 
 explizit wählen. Für den Build aus dem Checkout aktivieren Vulkan-Header und `glslc` zusammen mit
 `cargo build --release --locked -p ln-app --features vulkan` die GPU-Unterstützung.
 
+## Browser-Erweiterung und Bilder
+
+Die Erweiterung für Zen und Firefox in [`extension/`](extension/README.md) speichert die aktuelle
+Seite per Knopf, Kontextmenü oder Alt+Shift+L als Notiz: Webseiten mit Zusammenfassung und
+Seitentext unter `Web/`, YouTube-Videos mit Zusammenfassung und Transkript (Zeitstempel springen
+ins Video) unter `YouTube/`. Fehlt ein Transkript, holt die App Untertitel mit `yt-dlp` oder
+transkribiert die Tonspur lokal mit Whisper. Die App nimmt dafür nur lokale Anfragen mit Token an
+(Einstellungen → Browser-Erweiterung, Schnittstelle: [docs/clip-api.md](docs/clip-api.md)).
+
+Bilder lassen sich per Drag & Drop oder Einfügen in eine Notiz übernehmen. Sie landen unter
+`assets/` neben der Notiz und werden in der Leseansicht angezeigt.
+
 ## Aufbau
 
 | Crate | Aufgabe |
