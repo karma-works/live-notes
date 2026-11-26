@@ -1,5 +1,6 @@
-//! The local HTTP endpoint for the browser extension (`docs/clip-api.md`): 127.0.0.1 only,
-//! bearer token, extension origins only, 8 MB body limit. Runs on the core's tokio runtime.
+//! The local HTTP endpoint for the browser extension (`docs/clip-api.md`) and MCP clients
+//! (`/mcp`, `docs/mcp.md`): 127.0.0.1 only, bearer token, extension origins only, 8 MB body
+//! limit. Runs on the core's tokio runtime.
 
 use super::ClipRequest;
 use crate::Core;
@@ -173,18 +174,9 @@ async fn route(core: Weak<Core>, port: u16, req: Request<Incoming>) -> Resp {
             json(StatusCode::OK, serde_json::json!({"app": "live-notes", "version": env!("CARGO_PKG_VERSION"), "api": API_VERSION}))
         }
         (Method::POST, "/v1/clip") => {
-            let too_big = req
-                .headers()
-                .get(header::CONTENT_LENGTH)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<usize>().ok())
-                .is_some_and(|n| n > BODY_LIMIT);
-            if too_big {
-                return error(StatusCode::PAYLOAD_TOO_LARGE, "body larger than 8 MB");
-            }
-            let body = match Limited::new(req.into_body(), BODY_LIMIT).collect().await {
-                Ok(b) => b.to_bytes(),
-                Err(_) => return error(StatusCode::PAYLOAD_TOO_LARGE, "body larger than 8 MB"),
+            let body = match read_body(req).await {
+                Ok(b) => b,
+                Err(r) => return *r,
             };
             let clip: ClipRequest = match serde_json::from_slice(&body) {
                 Ok(c) => c,
@@ -202,8 +194,49 @@ async fn route(core: Weak<Core>, port: u16, req: Request<Incoming>) -> Resp {
                 None => error(StatusCode::NOT_FOUND, "unknown job"),
             }
         }
+        (Method::POST, "/mcp") => {
+            let version = req.headers().get("mcp-protocol-version").and_then(|v| v.to_str().ok()).map(str::to_string);
+            if !crate::mcp::protocol_header_ok(version.as_deref()) {
+                return error(StatusCode::BAD_REQUEST, "unsupported MCP-Protocol-Version");
+            }
+            let body = match read_body(req).await {
+                Ok(b) => b,
+                Err(r) => return *r,
+            };
+            let msg: serde_json::Value = match serde_json::from_slice(&body) {
+                Ok(m) => m,
+                Err(e) => return json(StatusCode::BAD_REQUEST, crate::mcp::parse_error(&format!("invalid JSON: {e}"))),
+            };
+            match crate::mcp::handle(&core, msg).await {
+                Some(answer) => json(StatusCode::OK, answer),
+                None => {
+                    let mut r = Response::new(Full::new(Bytes::new()));
+                    *r.status_mut() = StatusCode::ACCEPTED;
+                    r
+                }
+            }
+        }
+        // No server-initiated SSE stream and no sessions to end (Streamable HTTP allows both).
+        (_, "/mcp") => error(StatusCode::METHOD_NOT_ALLOWED, "POST only"),
         (_, "/v1/ping" | "/v1/clip") => error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
         _ => error(StatusCode::NOT_FOUND, "not found"),
+    }
+}
+
+/// The request body, at most [`BODY_LIMIT`]; an announced larger body is refused unread.
+async fn read_body(req: Request<Incoming>) -> Result<Bytes, Box<Resp>> {
+    let too_big = req
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        .is_some_and(|n| n > BODY_LIMIT);
+    if too_big {
+        return Err(Box::new(error(StatusCode::PAYLOAD_TOO_LARGE, "body larger than 8 MB")));
+    }
+    match Limited::new(req.into_body(), BODY_LIMIT).collect().await {
+        Ok(b) => Ok(b.to_bytes()),
+        Err(_) => Err(Box::new(error(StatusCode::PAYLOAD_TOO_LARGE, "body larger than 8 MB"))),
     }
 }
 

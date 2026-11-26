@@ -2,8 +2,8 @@
 
 Lokaler HTTP-Endpunkt, über den die Zen/Firefox-Extension Webseiten und YouTube-Videos als
 Notiz ablegt. Bewusst schlichtes HTTP+JSON statt MCP: die Extension ist kein LLM-Client. Die
-eigentliche Logik liegt in `ln-core` (`Core::clip`), damit ein späterer MCP-Server sie als Tool
-wiederverwenden kann.
+eigentliche Logik liegt in `ln-core` (`Core::clip`), damit auch der MCP-Server unter `/mcp` desselben Endpunkts sie als Werkzeug
+`clip_url` nutzt ([docs/mcp.md](mcp.md)).
 
 ## Transport und Sicherheit
 

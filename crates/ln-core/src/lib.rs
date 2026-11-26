@@ -8,6 +8,7 @@ mod chatgpt;
 pub mod clip;
 mod events;
 mod indexer;
+mod mcp;
 mod models;
 mod notes;
 mod overview;
