@@ -89,6 +89,19 @@ transkribiert die Tonspur lokal mit Whisper. Die App nimmt dafür nur lokale Anf
 Bilder lassen sich per Drag & Drop oder Einfügen in eine Notiz übernehmen. Sie landen unter
 `assets/` neben der Notiz und werden in der Leseansicht angezeigt.
 
+## Claude Code und andere MCP-Clients
+
+Derselbe lokale Endpunkt ist unter `/mcp` ein MCP-Server (Streamable HTTP). Claude Code kann damit
+Notizen suchen (`search_notes`), lesen (`read_note`), anlegen (`create_note`) und Webseiten oder
+YouTube-Videos als Notiz speichern (`clip_url`, `clip_status`). Die App muss laufen; den Token gibt
+es unter Einstellungen → Browser-Erweiterung:
+
+```bash
+claude mcp add --transport http --scope user live-notes http://127.0.0.1:47823/mcp --header "Authorization: Bearer <token>"
+```
+
+Details, Claude Desktop und Begründung für HTTP statt stdio: [docs/mcp.md](docs/mcp.md).
+
 ## Aufbau
 
 | Crate | Aufgabe |
@@ -111,4 +124,5 @@ veröffentlicht von `.github/workflows/pages.yml`.
 
 - [Spezifikation](docs/SPEC.md) · [Status](docs/STATUS.md)
 - [Analyse von Google AI Edge Foresight](docs/foresight-analyse.md)
+- [Clip-API](docs/clip-api.md) · [MCP-Server](docs/mcp.md)
 - [ADR-0001: UI-Framework](docs/adr/ADR-0001-ui-framework.md) · [ADR-0002: Modellanbindung](docs/adr/ADR-0002-modellanbindung.md)

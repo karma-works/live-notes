@@ -7,6 +7,7 @@ mod cost;
 mod decisions;
 pub mod prompts;
 mod types;
+pub mod web;
 
 pub use client::Client;
 pub use decisions::{Decisions, YesNo};

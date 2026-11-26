@@ -5,9 +5,9 @@
 //! [`server`].
 
 mod captions;
-mod render;
+pub(crate) mod render;
 mod server;
-mod youtube;
+pub(crate) mod youtube;
 
 pub use captions::{CaptionCue, merge_cues, parse_json3, parse_vtt};
 pub use server::ClipServerStatus;
