@@ -235,3 +235,19 @@ organize-thoughts = Gedanken ordnen
 organize-thoughts-help = Gedanken per Mikrofon aufnehmen und zu einem strukturierten Dokument zusammenführen.
 organize-thoughts-recording = Sprich deine Gedanken frei aus. Nach dem Stoppen entsteht daraus ein strukturiertes Dokument ohne Wiederholungen und Zeitstempel. Ausgangsaussagen werden bis zur erfolgreichen Konsolidierung zur Wiederherstellung aufbewahrt.
 retry-consolidation = Gedanken erneut ordnen
+
+# Browser-Erweiterung (docs/clip-api.md)
+clip-section = Browser-Erweiterung
+clip-hint = Die Erweiterung für Zen und Firefox speichert Webseiten und YouTube-Videos als Notiz mit Zusammenfassung. Trage dort den Token ein. Die App nimmt Anfragen nur von diesem Rechner an.
+clip-enabled = Anfragen der Browser-Erweiterung annehmen
+clip-running = Bereit auf
+clip-off = Aus
+clip-failed = Nicht gestartet:
+clip-port = Port
+clip-port-invalid = Gib einen Port zwischen 1024 und 65535 ein.
+clip-token = Token
+clip-copy = Kopieren
+clip-copied = Token in die Zwischenablage kopiert
+clip-regenerate = Neu erzeugen
+clip-regenerated = Neuer Token erzeugt. Trage ihn in der Erweiterung ein.
+clip-token-not-stored = Kein Schlüsselbund verfügbar: Der Token gilt nur bis zum Beenden der App.

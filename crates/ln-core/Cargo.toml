@@ -20,7 +20,7 @@ ln-ingest.workspace = true
 ln-asr = { workspace = true, default-features = false }
 ln-audio.workspace = true
 ln-models.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
 futures.workspace = true
 parking_lot.workspace = true
 crossbeam-channel.workspace = true
@@ -30,8 +30,13 @@ chrono.workspace = true
 ulid.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
+hound.workspace = true
+# Local endpoint for the browser extension (docs/clip-api.md).
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+getrandom = "0.3"
 
 [dev-dependencies]
-tempfile.workspace = true
 wiremock.workspace = true
-hound.workspace = true

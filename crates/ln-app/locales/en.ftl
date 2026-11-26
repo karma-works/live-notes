@@ -235,3 +235,19 @@ organize-thoughts = Organize thoughts
 organize-thoughts-help = Record thoughts through your microphone and turn them into a structured document.
 organize-thoughts-recording = Speak your thoughts freely. After stopping, they become a structured document without repetition or timestamps. Source text is kept for recovery until consolidation succeeds.
 retry-consolidation = Retry organizing thoughts
+
+# Browser extension (docs/clip-api.md)
+clip-section = Browser extension
+clip-hint = The extension for Zen and Firefox saves web pages and YouTube videos as notes with a summary. Enter the token there. The app only accepts requests from this computer.
+clip-enabled = Accept requests from the browser extension
+clip-running = Ready on
+clip-off = Off
+clip-failed = Not started:
+clip-port = Port
+clip-port-invalid = Enter a port between 1024 and 65535.
+clip-token = Token
+clip-copy = Copy
+clip-copied = Token copied to clipboard
+clip-regenerate = Regenerate
+clip-regenerated = New token created. Enter it in the extension.
+clip-token-not-stored = No keyring available: the token is valid only until the app quits.
