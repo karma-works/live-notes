@@ -1,0 +1,7 @@
+{"wireMagic":"pb3","pens":[{}],"wsWinStyles":[{}],"wpWinPositions":[{}],"events":[
+{"tStartMs":0,"dDurationMs":213000,"id":1,"wpWinPosId":1,"wsWinStyleId":1},
+{"tStartMs":1360,"dDurationMs":1680,"wWinId":1,"segs":[{"utf8":"[♪♪♪]"}]},
+{"tStartMs":18640,"dDurationMs":3240,"wWinId":1,"segs":[{"utf8":"♪ We're no"},{"utf8":" strangers","tOffsetMs":400},{"utf8":"\nto love ♪"}]},
+{"tStartMs":21880,"dDurationMs":10,"aAppend":1,"wWinId":1,"segs":[{"utf8":"\n"}]},
+{"tStartMs":22640,"dDurationMs":4320,"wWinId":1,"segs":[{"utf8":"♪ You know the rules and so do I ♪"}]}
+]}

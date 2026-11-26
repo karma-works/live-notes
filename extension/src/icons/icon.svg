@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Simplified Live Notes logo (docs/logo.svg) for toolbar sizes: bars become note lines. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1E2433"/>
+      <stop offset="1" stop-color="#0B0F18"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#F8B26A"/>
+      <stop offset="1" stop-color="#F06A4E"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <g fill="url(#wave)">
+    <rect x="18" y="50" width="12" height="28" rx="6"/>
+    <rect x="36" y="32" width="12" height="64" rx="6"/>
+    <rect x="54" y="44" width="12" height="40" rx="6"/>
+  </g>
+  <g fill="#F4F1EA">
+    <rect x="74" y="40" width="38" height="12" rx="6"/>
+    <rect x="74" y="58" width="30" height="12" rx="6"/>
+    <rect x="74" y="76" width="34" height="12" rx="6" opacity="0.55"/>
+  </g>
+</svg>
