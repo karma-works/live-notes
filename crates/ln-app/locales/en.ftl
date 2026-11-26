@@ -235,3 +235,8 @@ organize-thoughts = Organize thoughts
 organize-thoughts-help = Record thoughts through your microphone and turn them into a structured document.
 organize-thoughts-recording = Speak your thoughts freely. After stopping, they become a structured document without repetition or timestamps. Source text is kept for recovery until consolidation succeeds.
 retry-consolidation = Retry organizing thoughts
+
+## Images in notes (drag & drop, paste, reading view)
+image-drop-not-image = Only images can be added (PNG, JPG, GIF, WebP, SVG, BMP). Other files were skipped.
+image-import-failed = The image could not be added.
+image-missing = Image not found:

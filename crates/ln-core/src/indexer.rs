@@ -102,7 +102,8 @@ fn run(weak: Weak<Core>, rx: Receiver<Cmd>) {
                 watched = want;
             }
             for (id, root, sub, ex) in roots.list.clone() {
-                let opts = ScanOptions { include_subdirs: sub, excludes: ex, ..Default::default() };
+                let opts =
+                    ScanOptions { include_subdirs: sub, excludes: ex, skip_note_assets: root == core.notes_dir(), ..Default::default() };
                 sync_root(&core, id, &root, &opts, &rx_peek(&rx));
                 core.emit(CoreEvent::SourcesChanged);
             }
@@ -117,6 +118,10 @@ fn run(weak: Weak<Core>, rx: Receiver<Cmd>) {
                     core.emit(CoreEvent::NoteFileChanged(p.clone()));
                 }
                 let Some((id, ..)) = roots.list.iter().find(|r| p.starts_with(&r.1)) else { continue };
+                // Images of notes are not indexed (the scan skips them as well).
+                if ln_ingest::in_note_assets(&notes_dir, &p) {
+                    continue;
+                }
                 if p.is_file() {
                     if let Some(f) = scanned(&p) {
                         let _ = index_one(&core, *id, &f);

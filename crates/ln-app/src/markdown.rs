@@ -14,6 +14,11 @@ pub enum Block {
         labels: Vec<String>,
     },
     Markdown(String),
+    /// An image on its own line (`![alt](path)`); `path` as written in the note, relative to it.
+    Image {
+        alt: String,
+        path: String,
+    },
     Task {
         line: usize,
         checked: bool,
@@ -119,6 +124,14 @@ pub fn blocks(text: &str) -> Vec<Block> {
                 continue;
             }
         }
+        if !in_code
+            && !in_transcript
+            && let Some((alt, path)) = ln_notes::parse_image_line(line)
+        {
+            flush_md(&mut md, &mut out);
+            out.push(Block::Image { alt, path });
+            continue;
+        }
         if !in_code && let Some((indent, checked, t)) = task(line) {
             flush_md(&mut md, &mut out);
             out.push(Block::Task { line: i, checked, text: t, indent });
@@ -155,6 +168,29 @@ mod tests {
     fn empty_sections_have_no_heading() {
         let b = blocks("<!-- ln:notes -->\n## Meine Notizen\n\n<!-- ln:summary -->\n## Zusammenfassung\n- A\n");
         assert_eq!(b, vec![Block::Markdown("## Zusammenfassung\n- A\n".into())]);
+    }
+
+    #[test]
+    fn images_on_their_own_line_are_blocks() {
+        let b = blocks("# Bilder\n\nVorher\n![Shot 1](assets/0123456789ab.png)\n![](<assets/a b.png> \"T\")\nNachher ![inline](x.png)\n");
+        assert_eq!(
+            b,
+            vec![
+                Block::Markdown("# Bilder\n\nVorher\n".into()),
+                Block::Image { alt: "Shot 1".into(), path: "assets/0123456789ab.png".into() },
+                Block::Image { alt: "".into(), path: "assets/a b.png".into() },
+                Block::Markdown("Nachher ![inline](x.png)\n".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn images_in_sections_keep_their_heading_and_code_stays_code() {
+        let b = blocks("<!-- ln:notes -->\n## Meine Notizen\n![a](assets/a.png)\n```\n![b](assets/b.png)\n```\n");
+        assert_eq!(b[0], Block::Markdown("## Meine Notizen\n".into()));
+        assert_eq!(b[1], Block::Image { alt: "a".into(), path: "assets/a.png".into() });
+        assert!(matches!(&b[2], Block::Markdown(m) if m.contains("![b](assets/b.png)")));
+        assert_eq!(b.len(), 3);
     }
 
     #[test]
