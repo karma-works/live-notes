@@ -151,6 +151,13 @@ pub fn run(core: Arc<Core>, handle: AnyWindowHandle, view: Entity<AppView>, cx: 
         r.check("menu_opens_settings", page == "Settings", page.clone());
         r.check("settings_in_main_window", window_count(cx) == before, format!("windows {before} → {}", window_count(cx)));
         tall_shot(cx, handle, &view, &dir, "07-settings").await;
+        // The browser-extension endpoint runs (or names why not) and has a token to copy.
+        let clip = core.clip_server_status();
+        r.check(
+            "clip_endpoint_status",
+            !matches!(clip, ln_core::ClipServerStatus::Off) && core.clip_token().len() == 64,
+            format!("{clip:?}"),
+        );
 
         // 3. Setup guidance names the missing key.
         let steps = core.setup_steps();

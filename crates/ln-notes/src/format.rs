@@ -15,6 +15,15 @@ pub struct FrontMatter {
     pub created: Option<DateTime<FixedOffset>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<String>,
+    /// Where a clipped note comes from (URL of the web page or video).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// `page` or `youtube` for clipped notes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+    /// YouTube channel of a clipped video.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub languages: Vec<Lang>,
     /// Which transcriber produced the transcript, e.g. `local/whisper-large-v3-turbo`.

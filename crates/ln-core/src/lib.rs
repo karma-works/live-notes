@@ -5,6 +5,7 @@ mod ai;
 mod ask;
 mod categories;
 mod chatgpt;
+pub mod clip;
 mod events;
 mod indexer;
 mod models;
@@ -17,6 +18,7 @@ mod summary;
 
 pub use ask::{AskScope, Citation};
 pub use chatgpt::ChatGptStatus;
+pub use clip::{ClipJob, ClipKind, ClipRequest, ClipServerStatus, ClipStage, ClipStatus};
 pub use events::{CoreEvent, EventReceiver};
 pub use ln_ai::chatgpt::USAGE_URL as CHATGPT_USAGE_URL;
 pub use ln_ai::price_per_minute;
@@ -89,6 +91,8 @@ pub struct Core {
     asr: Mutex<Option<Arc<recording::AsrWorker>>>,
     /// Background work per note (connecting, finishing the transcript, summarizing).
     activities: Mutex<Vec<(PathBuf, recording::Activity)>>,
+    /// Clip jobs, token and local endpoint (`docs/clip-api.md`).
+    clip: clip::ClipState,
 }
 
 /// Opens a URL in the user's default browser.
@@ -131,6 +135,7 @@ impl Core {
             chatgpt: Default::default(),
             asr: Mutex::new(None),
             activities: Mutex::new(Vec::new()),
+            clip: Default::default(),
         });
         std::fs::create_dir_all(core.notes_dir())?;
         recording::recover(&core);
@@ -146,17 +151,21 @@ impl Core {
     }
 
     pub fn update_settings(&self, f: impl FnOnce(&mut Settings)) {
-        let (old_sources, new) = {
+        let (old_sources, old_clip, new) = {
             let mut s = self.settings.write();
             let old = s.sources.clone();
+            let old_clip = s.clip.clone();
             f(&mut s);
-            (old, s.clone())
+            (old, old_clip, s.clone())
         };
         if let Err(e) = new.save(&self.paths.settings_file()) {
             tracing::error!("saving settings: {e}");
         }
         if old_sources != new.sources {
             self.indexer.resync_all();
+        }
+        if old_clip != new.clip {
+            self.sync_clip_server();
         }
         self.events.send(CoreEvent::SettingsChanged);
     }
@@ -353,6 +362,7 @@ impl Core {
         if self.recording.lock().is_some() {
             self.stop_recording_blocking();
         }
+        self.stop_clip_server();
         self.indexer.shutdown();
         self.models.stop_all();
         let released = self.release_asr(std::time::Duration::from_secs(10));

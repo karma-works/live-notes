@@ -661,7 +661,7 @@ impl NoteView {
                                     h_flex()
                                         .gap_2()
                                         .text_xs()
-                                        .child(div().text_color(cx.theme().muted_foreground).child(ln_notes::format_timestamp(l.at_ms)))
+                                        .child(timestamp_cell(l, j, cx))
                                         .child(div().text_color(color).child(l.label.clone()))
                                         .child(div().text_color(cx.theme().muted_foreground).child(l.lang.to_string())),
                                 )
@@ -791,5 +791,21 @@ fn home_relative(dir: &Path) -> String {
     match std::env::var_os("HOME").map(PathBuf::from) {
         Some(home) if dir.starts_with(&home) => format!("~/{}", dir.strip_prefix(&home).unwrap_or(dir).display()),
         _ => dir.display().to_string(),
+    }
+}
+
+/// The time of a transcript row; a linked one (clipped YouTube video) opens that moment.
+fn timestamp_cell(l: &ln_notes::TranscriptLine, row: usize, cx: &App) -> AnyElement {
+    let time = ln_notes::format_timestamp(l.at_ms);
+    match l.link.clone() {
+        Some(url) => div()
+            .id(("tl-link", row))
+            .cursor_pointer()
+            .text_color(cx.theme().link)
+            .hover(|s| s.underline())
+            .child(time)
+            .on_click(move |_, _, cx| cx.open_url(&url))
+            .into_any_element(),
+        None => div().text_color(cx.theme().muted_foreground).child(time).into_any_element(),
     }
 }

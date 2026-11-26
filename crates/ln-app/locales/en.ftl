@@ -240,3 +240,19 @@ retry-consolidation = Retry organizing thoughts
 image-drop-not-image = Only images can be added (PNG, JPG, GIF, WebP, SVG, BMP). Other files were skipped.
 image-import-failed = The image could not be added.
 image-missing = Image not found:
+
+# Browser extension (docs/clip-api.md)
+clip-section = Browser extension
+clip-hint = The extension for Zen and Firefox saves web pages and YouTube videos as notes with a summary. Enter the token there. The app only accepts requests from this computer.
+clip-enabled = Accept requests from the browser extension
+clip-running = Ready on
+clip-off = Off
+clip-failed = Not started:
+clip-port = Port
+clip-port-invalid = Enter a port between 1024 and 65535.
+clip-token = Token
+clip-copy = Copy
+clip-copied = Token copied to clipboard
+clip-regenerate = Regenerate
+clip-regenerated = New token created. Enter it in the extension.
+clip-token-not-stored = No keyring available: the token is valid only until the app quits.

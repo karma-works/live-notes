@@ -65,3 +65,52 @@ Antwort `202 {"job_id":"…"}`. Die App arbeitet im Hintergrund weiter.
   Transkriptformat von `ln-notes`, jeder Zeitstempel verlinkt auf `…&t=<s>s`.
 - Ohne verfügbares Zusammenfassungsmodell wird die Notiz trotzdem geschrieben (Seitentext bzw.
   Transkript), mit Hinweis statt Zusammenfassung.
+
+## Umsetzung (App-Seite)
+
+Ergänzungen und Präzisierungen gegenüber dem Entwurf oben, so wie `ln-core` (`crates/ln-core/src/clip/`) sie umsetzt:
+
+- **Fehlerantworten** haben den Body `{"error":"…"}`: `400` (ungültiges JSON oder ungültige Anfrage,
+  z. B. keine http(s)-URL, Seite ohne `text`/`html`/`selection`, YouTube ohne gültige `video_id`),
+  `401` (Token fehlt/falsch), `403` (fremder `Origin` oder ein `Host`, der nicht `127.0.0.1`,
+  `localhost` oder `[::1]` ist – Schutz gegen DNS-Rebinding), `404` (unbekannter Pfad oder Job),
+  `405`, `413` (Body > 8 MB).
+- `OPTIONS` liefert `204` ohne Token (Origin-Prüfung gilt trotzdem). Antworten an Extension-Origins
+  tragen `Access-Control-Allow-Origin` mit genau diesem Origin.
+- `youtube.video_id` darf fehlen, wenn sie aus der URL hervorgeht (`watch?v=`, `youtu.be/`,
+  `shorts/`, `embed/`, `live/`). Leere Transkripteinträge werden verworfen, der Rest nach `start_ms`
+  sortiert.
+- **Jobstatus**: Felder ohne Wert fehlen im JSON. `stage` ist eines von `queued`,
+  `fetching_transcript`, `downloading_audio`, `waiting_for_recording` (lokale Transkription wartet,
+  bis eine laufende Aufnahme endet), `transcribing`, `summarizing`, `writing`. Beim Transkribieren
+  gibt es zusätzlich `progress` (0…1). Jobs liegen nur im Speicher (die letzten 200 abgeschlossenen)
+  und sind nach einem Neustart der App unbekannt (`404`).
+- **Token**: Secret-Store-Eintrag `clip-token` (Dienst `works.karma.livenotes`). Ohne Secret Store
+  gilt ein zufälliger Token nur bis zum Beenden; die Einstellungen weisen darauf hin.
+- **Untertitel** ohne Transkript der Extension: `yt-dlp -J` liefert Titel, Kanal, Dauer,
+  Beschreibung und die Spuren. Gewählt wird: Autoren-Untertitel in der Videosprache bzw.
+  `transcript_lang`/`lang`/`en`/`de` → YouTubes Spracherkennung in Originalsprache (`*-orig`) →
+  automatische Untertitel in diesen Sprachen → beliebige Autoren-Untertitel. Format json3, sonst VTT
+  (rollende Auto-Untertitel werden entdoppelt). Ohne Untertitel: `yt-dlp -x` → 16 kHz Mono-WAV
+  (ffmpeg) → Whisper über den gemeinsamen Transkriptions-Worker der App. Fehlen `yt-dlp` oder
+  `ffmpeg`, endet der Job mit `error` und einer Installationsanleitung. `LN_YTDLP`/`LN_FFMPEG`
+  überschreiben die Programmpfade.
+- **Zusammenfassung**: eigenes Prompt (`ln_ai::prompts::web_summary`): Titel, 3–6 Sätze,
+  Kernpunkte, Sprache = `summary_language`, sonst `lang`/Videosprache, sonst Sprache des Inhalts.
+  Inhalte über 48 000 Zeichen werden in Teilen zu je 24 000 Zeichen vorgelesen (höchstens 8 Teile),
+  danach zusammengefasst. Für Seiten nur `selection`, wenn gesetzt; `html` wird nur ohne `text`
+  verwendet (als reiner Text).
+- **Notiz**: Titel = Seiten-/Videotitel, nur ohne ihn der Titel des Modells. Front Matter zusätzlich
+  `id`, `title`, `languages`, bei YouTube `transcription` (`youtube/captions`,
+  `youtube/auto-captions` oder das Whisper-Modell), `app`. Unter `# Titel` eine Quellzeile
+  (`[example.com](url) · Website · Autor` bzw. `[YouTube](url) · Kanal · 3:33`). `## Zusammenfassung`
+  enthält die Sätze und `### Kernpunkte`. Seiten bekommen danach `## Seitentext` bzw.
+  `## Markierter Text` (Marker `<!-- ln:source -->`), damit Suche und Fragen den Inhalt finden.
+  YouTube-Transkriptzeilen: `[HH:MM:SS](https://www.youtube.com/watch?v=<id>&t=<s>s) <Kanal> (<lang>): <Text>`;
+  kurze Untertitel-Cues werden zu Zeilen von etwa 15–40 s zusammengefasst. Die Leseansicht macht den
+  Zeitstempel klickbar, in anderen Markdown-Programmen ist er ein normaler Link.
+- Ohne Zusammenfassungsmodell steht unter `## Zusammenfassung` ein Hinweis
+  (`> **Keine Zusammenfassung:** <Grund>`).
+- Headless zum Testen: `LN_SECRETS=memory LN_DATA_DIR=… LN_NOTES_DIR=… live-notes --serve-clip`
+  startet nur den Endpunkt und gibt Status und Token als JSON aus. `LN_CLIP_SKIP_SUBS=1` überspringt
+  Untertitel, um den Weg über Tonspur und Whisper zu prüfen.
