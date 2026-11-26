@@ -6,8 +6,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Optional: Schlüssel aus extension/.amo-credentials (nicht im Git, nur für dich lesbar).
+if [[ -f .amo-credentials ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .amo-credentials
+  set +a
+fi
+
 if [[ -z "${WEB_EXT_API_KEY:-}" || -z "${WEB_EXT_API_SECRET:-}" ]]; then
-  echo "WEB_EXT_API_KEY und WEB_EXT_API_SECRET müssen gesetzt sein." >&2
+  echo "WEB_EXT_API_KEY und WEB_EXT_API_SECRET fehlen (Umgebung oder extension/.amo-credentials)." >&2
   echo "Schlüssel gibt es unter https://addons.mozilla.org/developers/addon/api/key/" >&2
   exit 1
 fi

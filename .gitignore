@@ -12,3 +12,4 @@ Cargo.lock.bak
 /extension/dist-test/
 /extension/web-ext-artifacts/
 *.xpi
+extension/.amo-credentials

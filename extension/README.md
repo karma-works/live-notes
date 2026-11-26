@@ -32,13 +32,13 @@ sie erscheint aber nicht öffentlich auf addons.mozilla.org (AMO).
 1. **AMO-API-Schlüssel holen:** mit dem Firefox-Konto bei
    <https://addons.mozilla.org/developers/addon/api/key/> anmelden und „Neue Zugangsdaten
    erstellen“. Man bekommt einen *JWT-Aussteller* (= API-Key, `user:…`) und ein *JWT-Geheimnis*
-   (= API-Secret). Das Geheimnis gehört nicht ins Repository und nicht in Dateien im Projekt.
-2. **Signieren** (im Ordner `extension/`):
+   (= API-Secret). Das Geheimnis gehört nicht ins Repository.
+2. **Schlüssel ablegen:** beide Werte in `extension/.amo-credentials` eintragen
+   (`WEB_EXT_API_KEY=user:…`, `WEB_EXT_API_SECRET=…`). Die Datei steht in `.gitignore`; mit
+   `chmod 600` ist sie nur für dich lesbar. Alternativ die beiden Variablen in der Shell exportieren.
+3. **Signieren** (im Ordner `extension/`):
 
    ```sh
-   npm ci
-   export WEB_EXT_API_KEY='user:12345678:123'
-   read -rs WEB_EXT_API_SECRET && export WEB_EXT_API_SECRET   # Geheimnis eintippen
    ./scripts/sign.sh
    ```
 
