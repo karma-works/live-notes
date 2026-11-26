@@ -320,8 +320,11 @@ Minute im Modus „normal“.
     verändert die Datei nie unerwartet. Inline-Live-Vorschau (wie Obsidian) ist eine v2-Option.
 - Editor-Funktionen: Rückgängig/Wiederholen, Suchen/Ersetzen in der Notiz (`⌘F`), Listen automatisch
   fortsetzen, `Tab`/`⇧Tab` für Einrückung, Formatkürzel (`⌘B`, `⌘I`, `⌘K` im Editor = Link),
-  Bilder per Drag & Drop (Kopie in `assets/` neben der Notiz, relativer Link), IME (Pinyin) voll
-  unterstützt.
+  Bilder per Drag & Drop oder Einfügen aus der Zwischenablage (Kopie in `assets/` neben der Notiz,
+  benannt nach dem Inhalt: `assets/<12 Zeichen BLAKE3>.<ext>`, dasselbe Bild liegt nur einmal dort;
+  relativer Link `![Dateiname](assets/…)` an der Cursorposition, im Lesemodus am Ende der Notiz vor dem
+  Transkript), IME (Pinyin) voll unterstützt. Beim Verschieben einer Notiz in einen anderen Ordner
+  werden ihre verlinkten Bilder mitkopiert; `assets/` im Notizordner wird nicht indexiert.
 - **Speichern automatisch** (500 ms nach der letzten Änderung, atomar über Temp-Datei + Umbenennen).
   Kein Speichern-Knopf.
 - Externe Änderungen (anderer Editor, Sync) werden per Dateiüberwachung erkannt: ohne lokale
@@ -334,7 +337,9 @@ Minute im Modus „normal“.
 **Darstellung (Lesemodus)**
 - CommonMark + GFM: Überschriften, Listen, verschachtelte Listen, **Aufgabenlisten (anklickbar,
   schreibt `[x]` zurück in die Datei)**, Tabellen, Zitate, Code-Blöcke mit Syntaxhervorhebung
-  (tree-sitter), Inline-Code, Links, Bilder (lokal, relativ zum Notizpfad), Fußnoten, horizontale Linie.
+  (tree-sitter), Inline-Code, Links, Bilder (lokal, relativ zum Notizpfad; ein Bild in eigener Zeile wird in
+  Spaltenbreite mit Seitenverhältnis gezeigt, eine fehlende Datei als dezenter Platzhalter), Fußnoten,
+  horizontale Linie.
 - Front-Matter wird nicht als Text gezeigt, sondern als eine schlichte Kopfzeile (Datum, Dauer,
   Sprachen, Labels).
 - Transkriptzeilen (`[00:12:03] Andere (zh): …`) werden als Zeilen mit Zeitstempel in Sekundärfarbe,

@@ -209,6 +209,93 @@ impl NoteView {
         &self.file.path
     }
 
+    /// Files dropped onto the note: images are copied into `assets/` next to it and linked, one
+    /// per line (at the cursor in the editor, at the end of the body in the reading view).
+    fn drop_paths(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        let (images, others): (Vec<&PathBuf>, Vec<&PathBuf>) = paths.iter().partition(|p| ln_notes::is_image_path(p));
+        if !others.is_empty() {
+            window.push_notification(t("image-drop-not-image"), cx);
+        }
+        let mut links = Vec::new();
+        for p in images {
+            match self.core.import_image(&self.file.path, p) {
+                Ok(link) => links.push(link),
+                Err(e) => {
+                    tracing::warn!("import image {}: {e}", p.display());
+                    window.push_notification(t("image-import-failed"), cx);
+                }
+            }
+        }
+        self.insert_image_links(&links, window, cx);
+    }
+
+    /// `Ctrl+V` in the editor: an image on the clipboard (or copied image files) is stored like a
+    /// dropped one. Returns false for everything else, so text paste stays the editor's.
+    fn paste_images(&mut self, item: &ClipboardItem, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let mut links = Vec::new();
+        let mut handled = false;
+        for entry in item.entries() {
+            match entry {
+                ClipboardEntry::Image(img) => {
+                    handled = true;
+                    match self.core.import_image_bytes(&self.file.path, &img.bytes, img.format.extension(), "") {
+                        Ok(link) => links.push(link),
+                        Err(e) => {
+                            tracing::warn!("paste image: {e}");
+                            window.push_notification(t("image-import-failed"), cx);
+                        }
+                    }
+                }
+                ClipboardEntry::ExternalPaths(paths) if paths.paths().iter().any(|p| ln_notes::is_image_path(p)) => {
+                    handled = true;
+                    for p in paths.paths().iter().filter(|p| ln_notes::is_image_path(p)) {
+                        match self.core.import_image(&self.file.path, p) {
+                            Ok(link) => links.push(link),
+                            Err(e) => tracing::warn!("paste image {}: {e}", p.display()),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if handled {
+            self.insert_image_links(&links, window, cx);
+        }
+        handled
+    }
+
+    fn insert_image_links(&mut self, links: &[String], window: &mut Window, cx: &mut Context<Self>) {
+        if links.is_empty() {
+            return;
+        }
+        let block = links.join("\n");
+        match self.mode {
+            Mode::Edit => {
+                // Each image on a line of its own, so the reading view shows it as an image block.
+                let (before, after) = self.editor.read_with(cx, |e, _| {
+                    let v = e.value();
+                    let at = e.cursor().min(v.len());
+                    (v.get(..at).and_then(|s| s.chars().last()), v.get(at..).and_then(|s| s.chars().next()))
+                });
+                let lead = if before.is_some_and(|c| c != '\n') { "\n" } else { "" };
+                let trail = if after == Some('\n') { "" } else { "\n" };
+                let text = format!("{lead}{block}{trail}");
+                self.editor.update(cx, |e, cx| e.insert(text, window, cx));
+                self.focus_editor(window, cx);
+            }
+            Mode::Read => {
+                let new = ln_notes::append_to_body(&self.text, &block);
+                self.text = new.clone();
+                self.editor.update(cx, |e, cx| e.set_value(new, window, cx));
+                self.blocks = blocks(&self.text);
+                self.dirty = true;
+                self.edited = true;
+                self.save_now(cx);
+            }
+        }
+        cx.notify();
+    }
+
     fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |e, cx| e.focus(window, cx));
     }
@@ -540,6 +627,7 @@ impl NoteView {
                         })
                         .into_any_element()
                 }
+                Block::Image { alt, path } => render_image(&dir, alt, path, cx),
                 Block::Task { line, checked, text, indent } => {
                     let line = *line;
                     h_flex()
@@ -600,6 +688,14 @@ impl Render for NoteView {
         v_flex()
             .size_full()
             .track_focus(&self.focus)
+            // Image files dragged from the file manager (both modes). GPUI (0.3.9) only delivers
+            // file:// paths here: a browser drag that offers an http(s) URL is discarded by the
+            // platform layer before it reaches the app. GPUI also treats nothing as hovered while
+            // the window's last input was a key press, and drag events do not count as pointer
+            // input: right after typing, a drop is ignored until the pointer has moved over the
+            // window once.
+            .drag_over::<ExternalPaths>(|s, _, _, cx| s.bg(cx.theme().accent.opacity(0.35)))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| this.drop_paths(paths.paths(), window, cx)))
             .child(self.render_header(cx))
             .when_some(self.core.activity(self.path()), |el, a| {
                 let theme = cx.theme().clone();
@@ -645,10 +741,49 @@ impl Render for NoteView {
                     .size_full()
                     .px_6()
                     .py_4()
-                    .child(Editor::new(&self.editor).appearance(false).h(relative(1.)))
+                    .child(Editor::new(&self.editor).appearance(false).h(relative(1.)).on_paste({
+                        let me = cx.entity().downgrade();
+                        move |item, window, cx| me.update(cx, |this, cx| this.paste_images(item, window, cx)).unwrap_or(false)
+                    }))
                     .into_any_element(),
             })
     }
+}
+
+/// An image block of the reading view: as wide as the image, at most the column width, aspect
+/// ratio kept. A missing or unreadable file shows a quiet placeholder with the link target.
+fn render_image(dir: &Path, alt: &str, target: &str, cx: &Context<NoteView>) -> AnyElement {
+    let (muted, fg, border) = (cx.theme().muted, cx.theme().muted_foreground, cx.theme().border);
+    let label = if alt.is_empty() { target.to_string() } else { format!("{alt} · {target}") };
+    let placeholder = move |label: String| {
+        h_flex()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .rounded_md()
+            .border_1()
+            .border_color(border)
+            .bg(muted)
+            .text_xs()
+            .text_color(fg)
+            .child(IconName::File)
+            .child(format!("{} {label}", t("image-missing")))
+            .into_any_element()
+    };
+    let source: Option<ImageSource> = match ln_notes::local_target(target) {
+        Some(rel) => {
+            let full = dir.join(rel);
+            full.is_file().then(|| full.into())
+        }
+        None if target.starts_with("https://") || target.starts_with("http://") => Some(SharedUri::from(target.to_string()).into()),
+        None => None,
+    };
+    let Some(source) = source else { return placeholder(label) };
+    h_flex()
+        .w_full()
+        .py_1()
+        .child(img(source).max_w(relative(1.)).object_fit(ObjectFit::Contain).with_fallback(move || placeholder(label.clone())))
+        .into_any_element()
 }
 
 /// `/Users/me/Documents` → `~/Documents`, for the header of files outside the notes folder.
