@@ -6,11 +6,15 @@
 
 mod file;
 mod format;
+mod images;
 mod journal;
 mod transcript;
 
 pub use file::{NoteFile, SaveOutcome, atomic_write, file_fingerprint, recording_file_name, sanitize_title, unique_path};
 pub use format::{FrontMatter, Note, Section, SectionKind, headings, toggle_task};
+pub use images::{
+    ASSETS_DIR, IMAGE_EXTENSIONS, append_to_body, image_markdown, image_targets, is_image_path, local_target, parse_image_line, store_asset,
+};
 pub use journal::{JournalEntry, JournalWriter, RecoveredSession, recover_sessions};
 pub use transcript::{TranscriptLine, format_timestamp, parse_timestamp};
 

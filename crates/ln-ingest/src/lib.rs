@@ -10,7 +10,7 @@ mod watch;
 
 pub use chunk::{chunk_blocks, estimate_tokens};
 pub use extract::{Block, ExtractOptions, Extracted, FileKind, PARSER_VERSION, detect_lang, extract, kind_of};
-pub use scan::{ScanOptions, ScannedFile, scan};
+pub use scan::{ScanOptions, ScannedFile, in_note_assets, scan};
 pub use sync::{SyncReport, index_file, sync_source};
 pub use watch::{FolderWatcher, WatchEvent};
 
