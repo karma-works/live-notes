@@ -56,10 +56,11 @@ Antwort `202 {"job_id":"…"}`. Die App arbeitet im Hintergrund weiter.
 
 ## Ergebnis-Notiz
 
-- Ablage: `<Notizordner>/Web/YYYY-MM-DD <Titel>.md` bzw. `<Notizordner>/YouTube/YYYY-MM-DD <Titel>.md`
-  (`unique_path` bei Kollision).
-- Front Matter mit `created`, `source` (URL), `source_kind` (`page`/`youtube`), bei YouTube
-  `channel` und `duration`.
+- Ablage wie Aufnahmen: `<Notizordner>/YYYY/MM/YYYY-MM-DD HHMM <Titel>.md` (`unique_path` bei
+  Kollision), damit die Notizliste sie unter „Heute“ usw. zeigt.
+- Front Matter mit `created`, `source` (URL), `source_kind` (`page`/`youtube`), `labels`
+  (`[Web, <Host>]` bzw. `[YouTube]`, in der Leseansicht als `#Web #example.com`), bei YouTube
+  `channel` und `duration`. Notizen mit `source_kind` gelten in der Liste nicht als Aufnahme.
 - Inhalt: `# Titel`, Quelllink, `## Zusammenfassung` (KI, Sprache = Inhaltssprache bzw.
   `summary_language`), Kernpunkte. Bei YouTube darunter `## Transkript` im bestehenden
   Transkriptformat von `ln-notes`, jeder Zeitstempel verlinkt auf `…&t=<s>s`.

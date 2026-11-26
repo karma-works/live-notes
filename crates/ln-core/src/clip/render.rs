@@ -82,6 +82,11 @@ pub(crate) fn render(n: &ClipNote, ui: UiLanguage) -> String {
             ClipKind::Youtube => "youtube".into(),
         }),
         channel: n.channel.clone(),
+        // Where the note was found, shown as `#Web #example.com` / `#YouTube` in the header line.
+        labels: match n.kind {
+            ClipKind::Page => vec!["Web".into(), host(&n.url)],
+            ClipKind::Youtube => vec!["YouTube".into()],
+        },
         languages: n.lang.iter().map(Lang::new).collect(),
         transcription: match &n.body {
             Body::Video { transcriber, .. } => transcriber.clone(),
