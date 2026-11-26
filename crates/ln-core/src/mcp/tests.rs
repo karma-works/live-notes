@@ -266,7 +266,8 @@ fn tools_over_http() {
     assert_eq!(given["status"], "done", "{given}");
     assert_eq!(given["title"], "Given Page");
     let p = given["path"].as_str().unwrap();
-    assert!(p.starts_with("Web/") && p.ends_with(" Given Page.md"), "{p}");
+    let month = chrono::Local::now().format("%Y/%m/").to_string();
+    assert!(p.starts_with(&month) && p.ends_with(" Given Page.md"), "{p}");
     let saved = c.tool("read_note", json!({"path": p}))["content"].as_str().unwrap().to_string();
     assert!(saved.contains("Explains A. Then B.") && saved.contains("Numbats eat termites."), "{saved}");
 

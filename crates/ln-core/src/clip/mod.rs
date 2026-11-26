@@ -16,7 +16,7 @@ use crate::events::tr;
 use crate::{Core, CoreEvent};
 use chrono::Local;
 use ln_ai::prompts::{self, ClipSource, WebSummary};
-use ln_notes::{atomic_write, sanitize_title, unique_path};
+use ln_notes::{atomic_write, recording_file_name, sanitize_title, unique_path};
 use ln_types::{ChatRole, Lang};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -208,14 +208,6 @@ fn new_token() -> String {
         b.copy_from_slice(&u);
     }
     b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
-/// Folder of clipped notes inside the notes folder.
-fn folder(kind: ClipKind) -> &'static str {
-    match kind {
-        ClipKind::Page => "Web",
-        ClipKind::Youtube => "YouTube",
-    }
 }
 
 impl Core {
@@ -514,10 +506,11 @@ impl Core {
             }
         };
         stage(ClipStage::Writing, None);
-        let dir = self.notes_dir().join(folder(req.kind));
+        // Same place as recordings (`YYYY/MM/YYYY-MM-DD HHMM Title.md`), so the note list shows
+        // clips under today; labels and `source` in the front matter say where they came from.
         let name = sanitize_title(&title);
         let name = if name.is_empty() { "Clip".to_string() } else { name };
-        let path = unique_path(&dir.join(format!("{} {name}.md", created.format("%Y-%m-%d"))), None);
+        let path = unique_path(&self.notes_dir().join(recording_file_name(&created, Some(&name), ui)), None);
         atomic_write(&path, &note).map_err(|e| e.to_string())?;
         Ok((path, title))
     }

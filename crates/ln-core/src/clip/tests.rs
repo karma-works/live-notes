@@ -313,10 +313,15 @@ fn endpoint_saves_page_and_video_notes() {
     assert_eq!(job["status"], "done", "{job}");
     assert_eq!(job["title"], "Ein Artikel");
     let page_path = PathBuf::from(job["path"].as_str().unwrap());
-    assert!(page_path.starts_with(core.notes_dir().join("Web")), "{}", page_path.display());
+    // Clips live where recordings do, so the note list shows them under today.
+    let month = chrono::Local::now().format("%Y/%m").to_string();
+    assert!(page_path.starts_with(core.notes_dir().join(&month)), "{}", page_path.display());
     assert!(page_path.file_name().unwrap().to_string_lossy().ends_with(" Ein Artikel.md"));
     let text = std::fs::read_to_string(&page_path).unwrap();
     assert!(text.contains("source_kind: page"), "{text}");
+    assert!(text.contains("labels:\n- Web\n- example.com\n"), "{text}");
+    let entry = core.list_notes().into_iter().find(|n| n.path == page_path).unwrap();
+    assert!(!entry.is_recording);
     assert!(text.contains("Der Artikel erklärt A. Danach B.\n\n### Kernpunkte\n- A\n- B\n"), "{text}");
     assert!(text.contains("## Seitentext\nErster Absatz.\n\nZweiter Absatz.\n"), "{text}");
 
@@ -336,7 +341,8 @@ fn endpoint_saves_page_and_video_notes() {
     let job = wait_done(port, &auth, v["job_id"].as_str().unwrap());
     assert_eq!(job["status"], "done", "{job}");
     let p = PathBuf::from(job["path"].as_str().unwrap());
-    assert!(p.starts_with(core.notes_dir().join("YouTube")));
+    assert!(p.starts_with(core.notes_dir().join(&month)), "{}", p.display());
+    assert!(!core.list_notes().into_iter().find(|n| n.path == p).unwrap().is_recording, "clipped videos are not recordings");
     let text = std::fs::read_to_string(&p).unwrap();
     let note = ln_notes::Note::parse(&text).unwrap();
     assert_eq!(note.front.as_ref().unwrap().channel.as_deref(), Some("jawed"));

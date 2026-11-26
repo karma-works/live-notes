@@ -81,8 +81,9 @@ explizit wählen. Für den Build aus dem Checkout aktivieren Vulkan-Header und `
 
 Die Erweiterung für Zen und Firefox in [`extension/`](extension/README.md) speichert die aktuelle
 Seite per Knopf, Kontextmenü oder Alt+Shift+L als Notiz: Webseiten mit Zusammenfassung und
-Seitentext unter `Web/`, YouTube-Videos mit Zusammenfassung und Transkript (Zeitstempel springen
-ins Video) unter `YouTube/`. Fehlt ein Transkript, holt die App Untertitel mit `yt-dlp` oder
+Seitentext, YouTube-Videos mit Zusammenfassung und Transkript (Zeitstempel springen ins Video).
+Die Notiz liegt wie eine Aufnahme unter `JJJJ/MM/` und erscheint unter „Heute“; die Labels
+`#Web #<Website>` bzw. `#YouTube` und die Quellzeile zeigen, wo sie gefunden wurde. Fehlt ein Transkript, holt die App Untertitel mit `yt-dlp` oder
 transkribiert die Tonspur lokal mit Whisper. Die App nimmt dafür nur lokale Anfragen mit Token an
 (Einstellungen → Browser-Erweiterung, Schnittstelle: [docs/clip-api.md](docs/clip-api.md)).
 

@@ -47,7 +47,7 @@ pub(crate) fn list() -> Value {
             "description": "Returns the full Markdown of one note (front matter included). The path is relative to the notes folder, as search_notes and create_note return it.",
             "inputSchema": {
                 "type": "object",
-                "properties": {"path": {"type": "string", "description": "e.g. \"Web/2026-11-26 Some article.md\""}},
+                "properties": {"path": {"type": "string", "description": "e.g. \"2026/11/2026-11-26 1430 Some article.md\""}},
                 "required": ["path"]
             },
             "annotations": {"readOnlyHint": true, "openWorldHint": false}
@@ -70,7 +70,7 @@ pub(crate) fn list() -> Value {
         {
             "name": "clip_url",
             "title": "Save web page or YouTube video",
-            "description": "Saves a web page or YouTube video as a summarized note, like the Live Notes browser extension (notes land in the Web/ or YouTube/ folder). Videos are summarized from their captions, or transcribed locally. Pass text when you already have the page content, otherwise Live Notes downloads the page. Waits up to wait_seconds for the note; if it is not ready by then, the answer has a job_id for clip_status.",
+            "description": "Saves a web page or YouTube video as a summarized note, like the Live Notes browser extension (notes land next to recordings in YYYY/MM/, labelled Web or YouTube). Videos are summarized from their captions, or transcribed locally. Pass text when you already have the page content, otherwise Live Notes downloads the page. Waits up to wait_seconds for the note; if it is not ready by then, the answer has a job_id for clip_status.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

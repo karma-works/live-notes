@@ -43,7 +43,8 @@ impl Core {
                     modified: f.mtime,
                     created: front.created.map(|c| c.timestamp()),
                     languages: front.languages.iter().map(|l| l.to_string()).collect(),
-                    is_recording: note.section(&SectionKind::Transcript).is_some(),
+                    // Clipped videos have a transcript too, but were not recorded here.
+                    is_recording: note.section(&SectionKind::Transcript).is_some() && front.source_kind.is_none(),
                     labels: front.labels.clone(),
                     categories: front.categories.clone(),
                     path: f.path,
